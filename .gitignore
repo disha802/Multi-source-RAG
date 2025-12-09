@@ -21,6 +21,8 @@ instance/
 # Environment
 .env
 .venv
+RAG/
+
 
 # Uploads & Database
 uploads/
