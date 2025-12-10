@@ -3,9 +3,10 @@
 """
 Main Flask application
 """
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from pathlib import Path
+import os
 
 # Import configuration
 from config import Config
@@ -21,6 +22,7 @@ from utils.audio import VoiceSystem
 # Import route creators
 from routes.upload import create_upload_blueprint
 from routes.query import create_query_blueprint
+
 
 def create_app():
     """Application factory"""
@@ -55,21 +57,10 @@ def create_app():
         create_query_blueprint(rag_assistant, voice_system, Config)
     )
     
-    # Root endpoint
+    # Serve frontend
     @app.route('/')
-    def index():
-        return jsonify({
-            'status': 'running',
-            'message': 'RAG API is ready',
-            'endpoints': {
-                'query': 'POST /query',
-                'voice': 'POST /query/voice',
-                'upload_doc': 'POST /upload/document',
-                'upload_audio': 'POST /upload/audio',
-                'rebuild': 'POST /rebuild',
-                'stats': 'GET /stats'
-            }
-        })
+    def serve_frontend():
+        return send_from_directory('.', 'index.html')
     
     # Stats endpoint
     @app.route('/stats')
@@ -95,7 +86,8 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
+    port = int(os.environ.get('PORT', 5000))
     print("\n🌐 Starting Flask server...")
     print("📖 Frontend: Open the React app in your browser")
-    print("🔗 Backend API: http://localhost:5000/")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    print(f"🔗 Backend API: http://0.0.0.0:{port}/")
+    app.run(debug=False, host='0.0.0.0', port=port)
