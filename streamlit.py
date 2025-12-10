@@ -349,16 +349,13 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        groq_api_key = st.text_input(
-            "Groq API Key",
-            type="password",
-            help="Enter your Groq API key"
-        )
+        groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+
         if not groq_api_key:
-            st.warning("Please enter your Groq API key to continue")
-            st.stop()
-        
-        st.divider()
+            groq_api_key = st.text_input("Enter Groq API Key", type="password")
+            if not groq_api_key:
+                st.stop()
+                st.divider()
         
         st.header("📁 Upload Documents")
         uploaded_files = st.file_uploader(
@@ -455,37 +452,7 @@ def main():
                 if result['warning']:
                     st.warning(result['warning'])
                 
-                st.markdown("### 📊 Metrics")
-                met_col1, met_col2, met_col3, met_col4 = st.columns(4)
-                metrics = result['metrics']
-                
-                with met_col1:
-                    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric("Confidence", f"{metrics['confidence_emoji']} {metrics['confidence']}")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with met_col2:
-                    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric("Avg Similarity", f"{metrics['avg_similarity']:.1%}")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with met_col3:
-                    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric("Sources", metrics['num_sources'])
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with met_col4:
-                    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric("Latency", f"{metrics['latency']:.2f}s")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                col_risk1, col_risk2 = st.columns(2)
-                with col_risk1:
-                    st.info(f"**Hallucination Risk:** {metrics['hallucination_risk']}")
-                with col_risk2:
-                    cache_status = "✅ Yes" if metrics['cache_hit'] else "❌ No"
-                    st.info(f"**Cache Hit:** {cache_status}")
-                
+    
                 st.markdown("### 📚 Sources")
                 for i, citation in enumerate(result['citations'], 1):
                     with st.expander(f"Source {i}: {citation['title']}", expanded=False):
