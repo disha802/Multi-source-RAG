@@ -32,3 +32,7 @@ openai-whisper==20231117
 # Utilities
 tenacity==8.2.3
 python-dotenv==1.0.0
+
+#soundfiles
+sounddevice==0.4.6
+soundfile==0.12.1
