@@ -1,6 +1,6 @@
 """
 RAG Assistant - Streamlit Web Application
-Multi-format document QA system with voice support
+Multi-format document QA system
 """
 
 import streamlit as st
@@ -11,7 +11,6 @@ import hashlib
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-from datetime import datetime
 
 # LangChain
 from langchain_community.document_loaders import (
@@ -26,18 +25,9 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 # Groq
 from groq import Groq
 
-# Audio
-import sounddevice as sd
-import soundfile as sf
-import numpy as np
-from scipy.io.wavfile import write
-import whisper
-
 # Retry logic
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# ============================================================================
-# PAGE CONFIG
 # ============================================================================
 
 st.set_page_config(
@@ -47,122 +37,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for white and sky blue theme
-st.markdown("""
-<style>
-    /* Main theme colors */
-    :root {
-        --primary-blue: #0EA5E9;
-        --light-blue: #BAE6FD;
-        --sky-blue: #7DD3FC;
-        --dark-blue: #0284C7;
-    }
-    
-    /* Main container */
-    .main {
-        background-color: #FFFFFF;
-    }
-    
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #F0F9FF 0%, #E0F2FE 100%);
-    }
-    
-    /* Headers */
-    h1, h2, h3 {
-        color: #0284C7 !important;
-    }
-    
-    /* Buttons */
-    .stButton>button {
-        background-color: #0EA5E9;
-        color: white;
-        border-radius: 8px;
-        border: none;
-        padding: 0.5rem 1rem;
-        font-weight: 500;
-        transition: all 0.3s;
-    }
-    
-    .stButton>button:hover {
-        background-color: #0284C7;
-        box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
-    }
-    
-    /* Info boxes */
-    .stAlert {
-        background-color: #F0F9FF;
-        border-left: 4px solid #0EA5E9;
-    }
-    
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        color: #0284C7;
-    }
-    
-    /* Text inputs */
-    .stTextInput>div>div>input {
-        border: 2px solid #BAE6FD;
-        border-radius: 8px;
-    }
-    
-    .stTextInput>div>div>input:focus {
-        border-color: #0EA5E9;
-        box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.2);
-    }
-    
-    /* File uploader */
-    [data-testid="stFileUploader"] {
-        background-color: #F0F9FF;
-        border: 2px dashed #0EA5E9;
-        border-radius: 8px;
-    }
-    
-    /* Expander */
-    .streamlit-expanderHeader {
-        background-color: #F0F9FF;
-        border-radius: 8px;
-        color: #0284C7;
-    }
-    
-    /* Success/Info messages */
-    .stSuccess {
-        background-color: #DCFCE7;
-        color: #166534;
-    }
-    
-    /* Custom metric cards */
-    .metric-card {
-        background: linear-gradient(135deg, #F0F9FF 0%, #E0F2FE 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        border: 1px solid #BAE6FD;
-        box-shadow: 0 2px 8px rgba(14, 165, 233, 0.1);
-    }
-    
-    /* Answer box */
-    .answer-box {
-        background-color: #FFFFFF;
-        border: 2px solid #0EA5E9;
-        border-radius: 10px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 0 4px 12px rgba(14, 165, 233, 0.15);
-    }
-    
-    /* Source citations */
-    .citation-box {
-        background-color: #F0F9FF;
-        border-left: 4px solid #0EA5E9;
-        padding: 0.75rem;
-        margin: 0.5rem 0;
-        border-radius: 4px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# CONFIGURATION
 # ============================================================================
 
 class RAGConfig:
@@ -175,17 +49,11 @@ class RAGConfig:
     TOP_K_RESULTS = 3
     SIMILARITY_THRESHOLD = 0.5
     CACHE_SIZE = 100
-    WHISPER_MODEL = "base"
-    SAMPLE_RATE = 16000
     SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.xls', '.csv', '.txt']
-    SUPPORTED_AUDIO = ['.wav', '.mp3', '.m4a', '.flac', '.ogg']
 
-# ============================================================================
-# HELPER FUNCTIONS
 # ============================================================================
 
 def extract_section_from_text(text: str) -> str:
-    """Extract section headers from document text"""
     if not text or len(text.strip()) == 0:
         return "Empty Content"
     
@@ -210,11 +78,9 @@ def extract_section_from_text(text: str) -> str:
     return "General Content"
 
 def calculate_similarity_score(distance: float) -> float:
-    """Convert FAISS L2 distance to similarity percentage"""
     return 1 / (1 + distance)
 
 def assess_confidence(similarity_scores: List[float]) -> Tuple[str, str]:
-    """Assess retrieval confidence"""
     avg_sim = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0
     
     if avg_sim > 0.7:
@@ -225,7 +91,6 @@ def assess_confidence(similarity_scores: List[float]) -> Tuple[str, str]:
         return "LOW", "🔴"
 
 def detect_hallucination_risk(answer: str, num_sources: int, avg_similarity: float) -> Tuple[str, str]:
-    """Detect potential hallucination"""
     has_citations = any(f"Source {i+1}" in answer for i in range(num_sources))
     
     uncertainty_phrases = [
@@ -242,20 +107,16 @@ def detect_hallucination_risk(answer: str, num_sources: int, avg_similarity: flo
         return "LOW ✅", ""
 
 # ============================================================================
-# DOCUMENT LOADER
-# ============================================================================
 
 class DocumentLoader:
     @staticmethod
     def load_documents(uploaded_files) -> List[Document]:
-        """Load documents from uploaded files"""
         documents = []
         
         for uploaded_file in uploaded_files:
             try:
                 file_ext = Path(uploaded_file.name).suffix.lower()
                 
-                # Save uploaded file temporarily
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
                     tmp.write(uploaded_file.getvalue())
                     tmp_path = tmp.name
@@ -263,7 +124,6 @@ class DocumentLoader:
                 docs = DocumentLoader._load_single_file(tmp_path, uploaded_file.name, file_ext)
                 documents.extend(docs)
                 
-                # Clean up temp file
                 os.unlink(tmp_path)
                 
             except Exception as e:
@@ -273,7 +133,6 @@ class DocumentLoader:
     
     @staticmethod
     def _load_single_file(file_path: str, file_name: str, file_ext: str) -> List[Document]:
-        """Load a single file"""
         if file_ext == ".pdf":
             loader = PyPDFLoader(file_path)
             docs = loader.load()
@@ -285,7 +144,6 @@ class DocumentLoader:
                     "total_pages": len(docs),
                     "section": extract_section_from_text(doc.page_content)
                 })
-        
         elif file_ext == ".docx":
             loader = Docx2txtLoader(file_path)
             docs = loader.load()
@@ -296,7 +154,6 @@ class DocumentLoader:
                     "page_number": "N/A",
                     "section": extract_section_from_text(doc.page_content)
                 })
-        
         elif file_ext in [".xlsx", ".xls"]:
             loader = UnstructuredExcelLoader(file_path)
             docs = loader.load()
@@ -307,7 +164,6 @@ class DocumentLoader:
                     "page_number": f"Sheet {i+1}",
                     "section": "Tabular Data"
                 })
-        
         elif file_ext == ".csv":
             loader = CSVLoader(file_path)
             docs = loader.load()
@@ -318,7 +174,6 @@ class DocumentLoader:
                     "page_number": "Data Table",
                     "section": "Tabular Data"
                 })
-        
         elif file_ext == ".txt":
             loader = TextLoader(file_path)
             docs = loader.load()
@@ -329,46 +184,18 @@ class DocumentLoader:
                     "page_number": "N/A",
                     "section": extract_section_from_text(doc.page_content)
                 })
+        else:
+            st.warning(f"Unsupported file type: {file_ext}")
+            return []
         
         return docs
 
-# ============================================================================
-# AUDIO PROCESSING
-# ============================================================================
-
-class AudioProcessor:
-    def __init__(self):
-        if 'whisper_model' not in st.session_state:
-            with st.spinner("Loading Whisper model..."):
-                st.session_state.whisper_model = whisper.load_model(RAGConfig.WHISPER_MODEL)
-        self.model = st.session_state.whisper_model
-    
-    def transcribe_audio(self, audio_file) -> Optional[str]:
-        """Transcribe audio file"""
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
-                tmp.write(audio_file.getvalue())
-                tmp_path = tmp.name
-            
-            result = self.model.transcribe(tmp_path, language='en')
-            transcription = result['text'].strip()
-            
-            os.unlink(tmp_path)
-            return transcription
-        
-        except Exception as e:
-            st.error(f"Transcription failed: {e}")
-            return None
-
-# ============================================================================
-# VECTOR STORE
 # ============================================================================
 
 class VectorStoreManager:
     @staticmethod
     @st.cache_resource
     def get_embeddings():
-        """Load embedding model (cached)"""
         return HuggingFaceEmbeddings(
             model_name=RAGConfig.EMBEDDING_MODEL,
             encode_kwargs={"normalize_embeddings": True}
@@ -376,8 +203,6 @@ class VectorStoreManager:
     
     @staticmethod
     def create_vector_db(documents: List[Document]):
-        """Create vector database"""
-        # Chunk documents
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=RAGConfig.CHUNK_SIZE,
             chunk_overlap=RAGConfig.CHUNK_OVERLAP,
@@ -392,14 +217,11 @@ class VectorStoreManager:
         
         progress_bar.empty()
         
-        # Create vector DB
         embeddings = VectorStoreManager.get_embeddings()
         vector_db = FAISS.from_documents(chunks, embeddings)
         
         return vector_db, len(chunks)
 
-# ============================================================================
-# RAG ASSISTANT
 # ============================================================================
 
 class RAGAssistant:
@@ -415,12 +237,9 @@ class RAGAssistant:
             st.session_state.cache_misses = 0
     
     def query(self, question: str, k: int = RAGConfig.TOP_K_RESULTS) -> Dict:
-        """Process query and return results"""
         start_time = time.time()
         
-        # Check cache
         query_hash = hashlib.md5(question.lower().strip().encode()).hexdigest()
-        
         if query_hash in st.session_state.query_cache:
             st.session_state.cache_hits += 1
             result = st.session_state.query_cache[query_hash]
@@ -429,11 +248,8 @@ class RAGAssistant:
             return result
         
         st.session_state.cache_misses += 1
-        
-        # Retrieve documents
         relevant_docs = self.vector_db.similarity_search_with_score(question, k=k)
         
-        # Build context
         context_parts = []
         citations = []
         similarity_scores = []
@@ -452,7 +268,6 @@ class RAGAssistant:
             
             if source_id not in seen_sources:
                 seen_sources.add(source_id)
-                
                 citation = {
                     'title': meta.get('document_title', 'Unknown'),
                     'page': meta.get('page_number', 'N/A'),
@@ -462,11 +277,8 @@ class RAGAssistant:
                 citations.append(citation)
         
         context = "\n".join(context_parts)
-        
-        # Generate answer
         answer = self._generate_answer(context, question)
         
-        # Calculate metrics
         avg_similarity = sum(similarity_scores) / len(similarity_scores)
         confidence_level, confidence_emoji = assess_confidence(similarity_scores)
         hallucination_risk, warning = detect_hallucination_risk(
@@ -490,7 +302,6 @@ class RAGAssistant:
             }
         }
         
-        # Cache result
         st.session_state.query_cache[query_hash] = result
         if len(st.session_state.query_cache) > RAGConfig.CACHE_SIZE:
             oldest_key = next(iter(st.session_state.query_cache))
@@ -504,7 +315,6 @@ class RAGAssistant:
         reraise=True
     )
     def _generate_answer(self, context: str, question: str) -> str:
-        """Generate answer using LLM"""
         prompt = f"""You are a precise document analysis assistant. Answer questions using ONLY the provided sources.
 
 STRICT RULES:
@@ -531,53 +341,35 @@ ANSWER (with source citations):"""
         return response.choices[0].message.content
 
 # ============================================================================
-# MAIN APP
-# ============================================================================
 
 def main():
-    # Header
     st.title("🤖 RAG Assistant")
-    st.markdown("### Multi-format Document QA System with Voice Support")
+    st.markdown("### Multi-format Document QA System")
     
-    # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # API Key
         groq_api_key = st.text_input(
             "Groq API Key",
             type="password",
             help="Enter your Groq API key"
         )
-        
         if not groq_api_key:
             st.warning("Please enter your Groq API key to continue")
             st.stop()
         
         st.divider()
         
-        # Document Upload
         st.header("📁 Upload Documents")
         uploaded_files = st.file_uploader(
             "Upload your documents",
-            type=['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt'],
+            type=RAGConfig.SUPPORTED_EXTENSIONS,
             accept_multiple_files=True,
             help="Supported: PDF, Word, Excel, CSV, TXT"
         )
         
         st.divider()
         
-        # Audio Upload
-        st.header("🎤 Voice Query")
-        audio_file = st.file_uploader(
-            "Upload audio query",
-            type=['wav', 'mp3', 'm4a', 'flac', 'ogg'],
-            help="Upload an audio file to transcribe"
-        )
-        
-        st.divider()
-        
-        # Settings
         st.header("🔧 Settings")
         k_results = st.slider(
             "Number of sources",
@@ -589,7 +381,6 @@ def main():
         
         st.divider()
         
-        # Cache Stats
         if st.session_state.get('cache_hits', 0) + st.session_state.get('cache_misses', 0) > 0:
             st.header("📊 Cache Statistics")
             total = st.session_state.cache_hits + st.session_state.cache_misses
@@ -607,41 +398,18 @@ def main():
                 st.session_state.cache_misses = 0
                 st.success("Cache cleared!")
     
-    # Main content
     if not uploaded_files:
         st.info("👆 Please upload documents in the sidebar to get started")
-        
-        # Welcome message
-        st.markdown("""
-        ### Welcome to RAG Assistant! 🎉
-        
-        **Features:**
-        - 📄 Multi-format document support (PDF, Word, Excel, CSV, TXT)
-        - 🎤 Voice query support
-        - 💾 Smart caching for faster responses
-        - 📊 Detailed metrics and confidence scores
-        - ⚡ Hallucination risk detection
-        
-        **How to use:**
-        1. Upload your documents in the sidebar
-        2. Wait for processing to complete
-        3. Ask questions about your documents
-        4. Optionally, upload audio files for voice queries
-        """)
-        
         st.stop()
     
-    # Process documents
     if 'vector_db' not in st.session_state or st.session_state.get('last_files') != [f.name for f in uploaded_files]:
         with st.spinner("📚 Loading and processing documents..."):
-            # Load documents
             documents = DocumentLoader.load_documents(uploaded_files)
             
             if not documents:
                 st.error("No documents could be loaded. Please check your files.")
                 st.stop()
             
-            # Create vector DB
             vector_db, num_chunks = VectorStoreManager.create_vector_db(documents)
             
             st.session_state.vector_db = vector_db
@@ -651,10 +419,8 @@ def main():
             
             st.success(f"✅ Processed {len(documents)} documents into {num_chunks} chunks")
     
-    # Initialize assistant
     assistant = RAGAssistant(st.session_state.vector_db, groq_api_key)
     
-    # Document stats
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
@@ -672,27 +438,10 @@ def main():
     
     st.divider()
     
-    # Query input
-    query_input = ""
-    
-    # Handle audio transcription
-    if audio_file:
-        with st.spinner("🎤 Transcribing audio..."):
-            audio_processor = AudioProcessor()
-            transcription = audio_processor.transcribe_audio(audio_file)
-            
-            if transcription:
-                st.success(f"✅ Transcribed: {transcription}")
-                query_input = transcription
-            else:
-                st.error("Failed to transcribe audio")
-    
-    # Text query
     question = st.text_input(
         "💬 Ask a question about your documents:",
-        value=query_input,
         placeholder="What is this document about?",
-        help="Enter your question or upload an audio file"
+        help="Enter your question"
     )
     
     if st.button("🔍 Search", type="primary", use_container_width=True) and question:
@@ -700,52 +449,36 @@ def main():
             try:
                 result = assistant.query(question, k=k_results)
                 
-                # Answer
                 st.markdown("### 📝 Answer")
                 st.markdown(f'<div class="answer-box">{result["answer"]}</div>', unsafe_allow_html=True)
                 
                 if result['warning']:
                     st.warning(result['warning'])
                 
-                # Metrics
                 st.markdown("### 📊 Metrics")
                 met_col1, met_col2, met_col3, met_col4 = st.columns(4)
-                
                 metrics = result['metrics']
                 
                 with met_col1:
                     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric(
-                        "Confidence",
-                        f"{metrics['confidence_emoji']} {metrics['confidence']}"
-                    )
+                    st.metric("Confidence", f"{metrics['confidence_emoji']} {metrics['confidence']}")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with met_col2:
                     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric(
-                        "Avg Similarity",
-                        f"{metrics['avg_similarity']:.1%}"
-                    )
+                    st.metric("Avg Similarity", f"{metrics['avg_similarity']:.1%}")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with met_col3:
                     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric(
-                        "Sources",
-                        metrics['num_sources']
-                    )
+                    st.metric("Sources", metrics['num_sources'])
                     st.markdown('</div>', unsafe_allow_html=True)
                 
                 with met_col4:
                     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                    st.metric(
-                        "Latency",
-                        f"{metrics['latency']:.2f}s"
-                    )
+                    st.metric("Latency", f"{metrics['latency']:.2f}s")
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Risk indicators
                 col_risk1, col_risk2 = st.columns(2)
                 with col_risk1:
                     st.info(f"**Hallucination Risk:** {metrics['hallucination_risk']}")
@@ -753,7 +486,6 @@ def main():
                     cache_status = "✅ Yes" if metrics['cache_hit'] else "❌ No"
                     st.info(f"**Cache Hit:** {cache_status}")
                 
-                # Citations
                 st.markdown("### 📚 Sources")
                 for i, citation in enumerate(result['citations'], 1):
                     with st.expander(f"Source {i}: {citation['title']}", expanded=False):
