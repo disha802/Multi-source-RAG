@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Assistant</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+      min-height: 100vh;
+    }
+
+    .header {
+      background: white;
+      border-bottom: 1px solid #e2e8f0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .header-content {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .header-icon { color: #2563eb; }
+    
+    .header-title {
+      font-size: 1.5rem;
+      font-weight: bold;
+      color: #1e293b;
+    }
+
+    .header-subtitle {
+      font-size: 0.875rem;
+      color: #64748b;
+    }
+
+    .stats {
+      display: flex;
+      gap: 2rem;
+      font-size: 0.875rem;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: bold;
+    }
+
+    .stat-value.blue { color: #2563eb; }
+    .stat-value.green { color: #16a34a; }
+    .stat-value.purple { color: #9333ea; }
+
+    .stat-label {
+      color: #64748b;
+    }
+
+    .main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      font-size: 1rem;
+      transition: all 0.2s;
+    }
+
+    .tab.active {
+      background: white;
+      color: #2563eb;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    .tab.inactive {
+      background: rgba(255,255,255,0.5);
+      color: #64748b;
+    }
+
+    .tab.inactive:hover {
+      background: white;
+    }
+
+    .card {
+      background: white;
+      border-radius: 0.75rem;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      padding: 2rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 1rem;
+    }
+
+    .upload-area {
+      border: 2px dashed #cbd5e1;
+      border-radius: 0.5rem;
+      padding: 3rem;
+      text-align: center;
+      transition: border-color 0.2s;
+    }
+
+    .upload-area:hover {
+      border-color: #60a5fa;
+    }
+
+    .upload-icon {
+      color: #94a3b8;
+      margin: 0 auto 1rem;
+    }
+
+    .upload-text {
+      color: #475569;
+      margin-bottom: 0.5rem;
+    }
+
+    .upload-subtext {
+      font-size: 0.875rem;
+      color: #94a3b8;
+      margin-bottom: 1rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      font-size: 1rem;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+
+    .btn-success {
+      background: #16a34a;
+      color: white;
+    }
+
+    .btn-success:hover:not(:disabled) {
+      background: #15803d;
+    }
+
+    .btn-purple {
+      background: #9333ea;
+      color: white;
+    }
+
+    .btn-purple:hover {
+      background: #7e22ce;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .hidden { display: none; }
+
+    .progress-text {
+      margin-top: 1rem;
+      text-align: center;
+      color: #2563eb;
+      font-weight: 500;
+    }
+
+    .doc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .doc-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem;
+      background: #f8fafc;
+      border-radius: 0.5rem;
+    }
+
+    .doc-info {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .doc-icon {
+      color: #2563eb;
+    }
+
+    .doc-name {
+      font-weight: 500;
+      color: #1e293b;
+    }
+
+    .doc-size {
+      font-size: 0.875rem;
+      color: #64748b;
+    }
+
+    .textarea {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      font-family: inherit;
+      resize: none;
+      margin-bottom: 1rem;
+    }
+
+    .textarea:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+    }
+
+    .button-group {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    .btn-flex {
+      flex: 1;
+      justify-content: center;
+    }
+
+    .answer-text {
+      color: #334155;
+      white-space: pre-wrap;
+      line-height: 1.7;
+      margin-bottom: 1.5rem;
+    }
+
+    .divider {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .metadata {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.875rem;
+      flex-wrap: wrap;
+    }
+
+    .metadata-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #64748b;
+    }
+
+    .metadata-item strong {
+      color: #1e293b;
+    }
+
+    .cached-badge {
+      color: #2563eb;
+      font-weight: 500;
+    }
+
+    .sources-title {
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 0.75rem;
+    }
+
+    .source-item {
+      display: flex;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      background: #f8fafc;
+      border-radius: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .source-number {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      background: #dbeafe;
+      color: #2563eb;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+
+    .source-content {
+      flex: 1;
+    }
+
+    .source-title {
+      font-weight: 500;
+      color: #1e293b;
+      margin-bottom: 0.25rem;
+    }
+
+    .source-meta {
+      font-size: 0.875rem;
+      color: #64748b;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .spin {
+      animation: spin 1s linear infinite;
+    }
+
+    .header-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .doc-count {
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: #1e293b;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: #64748b;
+      padding: 3rem 2rem;
+    }
+
+    .empty-icon {
+      color: #cbd5e1;
+      margin: 0 auto 1rem;
+    }
+
+    .empty-title {
+      font-size: 1.125rem;
+      margin-bottom: 0.5rem;
+      color: #475569;
+    }
+
+    .empty-text {
+      font-size: 0.875rem;
+    }
+
+    .error-banner {
+      background: #fee;
+      border: 1px solid #fcc;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      color: #c33;
+    }
+
+    @media (max-width: 768px) {
+      .header-content {
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .stats {
+        width: 100%;
+        justify-content: space-around;
+      }
+
+      .button-group {
+        flex-direction: column;
+      }
+
+      .btn-flex {
+        width: 100%;
+      }
+    }
+
+    /* Simple icon replacements (no external lib needed) */
+    .icon {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <div class="header-left">
+        <span style="font-size: 32px;">🗄️</span>
+        <div>
+          <h1 class="header-title">RAG Assistant</h1>
+          <p class="header-subtitle">Upload documents and ask questions</p>
+        </div>
+      </div>
+      
+      <div class="stats" id="stats">
+        <div class="stat-item">
+          <div class="stat-value blue" id="stat-docs">-</div>
+          <div class="stat-label">Documents</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value green" id="stat-vectors">-</div>
+          <div class="stat-label">Vectors</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value purple" id="stat-cache">-</div>
+          <div class="stat-label">Cached</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="main">
+    <!-- Connection Error Banner -->
+    <div id="error-banner" class="error-banner hidden">
+      ⚠️ Cannot connect to backend. Make sure Flask server is running on http://localhost:5000
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" id="upload-tab" onclick="switchTab('upload')">
+        📤 Upload Documents
+      </button>
+      <button class="tab inactive" id="query-tab" onclick="switchTab('query')">
+        💬 Ask Questions
+      </button>
+    </div>
+
+    <!-- Upload Tab -->
+    <div id="upload-content">
+      <!-- Upload Area -->
+      <div class="card">
+        <h2 class="card-title">Upload Documents</h2>
+        
+        <div class="upload-area">
+          <div style="font-size: 48px; margin-bottom: 1rem;">📤</div>
+          <p class="upload-text">Click to upload or drag and drop</p>
+          <p class="upload-subtext">PDF, DOCX, XLSX, CSV, TXT (Max 50MB)</p>
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.docx,.xlsx,.xls,.csv,.txt"
+            id="file-input"
+            class="hidden"
+            onchange="handleFileUpload(event)"
+          />
+          <label for="file-input" class="btn btn-primary">
+            Choose Files
+          </label>
+        </div>
+
+        <div id="upload-progress" class="progress-text hidden"></div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="card">
+        <div class="empty-state">
+          <div style="font-size: 48px; margin-bottom: 1rem;">📦</div>
+          <p class="empty-title">No documents uploaded yet</p>
+          <p class="empty-text">Upload documents to get started with RAG queries</p>
+        </div>
+      </div>
+
+      <!-- Uploaded Documents -->
+      <div id="documents-card" class="card hidden">
+        <div class="header-actions">
+          <h3 class="doc-count">Uploaded Documents (<span id="doc-count">0</span>)</h3>
+          <button class="btn btn-success" id="rebuild-btn" onclick="handleRebuild(event)">
+            🔄 Rebuild Database
+          </button>
+        </div>
+
+        <div class="doc-list" id="doc-list"></div>
+      </div>
+    </div>
+
+    <!-- Query Tab -->
+    <div id="query-content" class="hidden">
+      <!-- Query Input -->
+      <div class="card">
+        <h2 class="card-title">Ask a Question</h2>
+        
+        <textarea
+          id="query-input"
+          placeholder="Type your question here... (Press Ctrl+Enter to submit)"
+          class="textarea"
+          rows="4"
+        ></textarea>
+
+        <div class="button-group">
+          <button class="btn btn-primary btn-flex" onclick="handleTextQuery()" id="ask-btn">
+            💬 Ask Question
+          </button>
+
+          <label class="btn btn-purple">
+            🎤 Voice Query
+            <input
+              type="file"
+              accept=".wav,.mp3,.m4a,.flac,.ogg"
+              class="hidden"
+              id="audio-input"
+              onchange="handleVoiceQuery(event)"
+            />
+          </label>
+        </div>
+      </div>
+
+      <!-- Answer -->
+      <div id="answer-card" class="card hidden">
+        <h3 class="card-title">Answer</h3>
+        
+        <div class="answer-text" id="answer-text"></div>
+
+        <!-- Metadata -->
+        <div class="divider">
+          <div class="metadata" id="metadata"></div>
+        </div>
+
+        <!-- Sources -->
+        <div class="divider">
+          <h4 class="sources-title">Sources:</h4>
+          <div id="sources-list"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API_URL = 'http://localhost:5000';
+    let documents = [];
+    let loading = false;
+
+    // Fetch stats on load
+    fetchStats();
+
+    // Add keyboard shortcut for query
+    document.getElementById('query-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleTextQuery();
+      }
+    });
+
+    async function fetchStats() {
+      try {
+        const response = await fetch(`${API_URL}/stats`);
+        
+        if (!response.ok) {
+          throw new Error('Stats unavailable');
+        }
+        
+        const data = await response.json();
+        document.getElementById('stat-docs').textContent = data.documents_count;
+        document.getElementById('stat-vectors').textContent = data.total_vectors;
+        document.getElementById('stat-cache').textContent = data.cache_size;
+        
+        document.getElementById('error-banner').classList.add('hidden');
+      } catch (error) {
+        console.error('Failed to fetch stats:', error);
+        document.getElementById('stat-docs').textContent = '-';
+        document.getElementById('stat-vectors').textContent = '-';
+        document.getElementById('stat-cache').textContent = '-';
+        document.getElementById('error-banner').classList.remove('hidden');
+      }
+    }
+
+    function switchTab(tab) {
+      const uploadTab = document.getElementById('upload-tab');
+      const queryTab = document.getElementById('query-tab');
+      const uploadContent = document.getElementById('upload-content');
+      const queryContent = document.getElementById('query-content');
+
+      if (tab === 'upload') {
+        uploadTab.classList.add('active');
+        uploadTab.classList.remove('inactive');
+        queryTab.classList.add('inactive');
+        queryTab.classList.remove('active');
+        uploadContent.classList.remove('hidden');
+        queryContent.classList.add('hidden');
+      } else {
+        queryTab.classList.add('active');
+        queryTab.classList.remove('inactive');
+        uploadTab.classList.add('inactive');
+        uploadTab.classList.remove('active');
+        queryContent.classList.remove('hidden');
+        uploadContent.classList.add('hidden');
+      }
+    }
+
+    async function handleFileUpload(event) {
+      const files = Array.from(event.target.files);
+      if (files.length === 0) return;
+
+      const progress = document.getElementById('upload-progress');
+      progress.textContent = 'Uploading...';
+      progress.classList.remove('hidden');
+
+      let successCount = 0;
+
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+          const response = await fetch(`${API_URL}/upload/document`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (response.ok) {
+            documents.push({ name: file.name, size: file.size });
+            successCount++;
+          } else {
+            const data = await response.json();
+            alert(`Failed to upload ${file.name}: ${data.error || 'Unknown error'}`);
+          }
+        } catch (error) {
+          alert(`Error uploading ${file.name}: ${error.message}`);
+        }
+      }
+
+      if (successCount > 0) {
+        updateDocumentsList();
+        progress.textContent = `✅ Successfully uploaded ${successCount} file(s)`;
+        setTimeout(() => progress.classList.add('hidden'), 3000);
+      } else {
+        progress.classList.add('hidden');
+      }
+
+      event.target.value = '';
+    }
+
+    function updateDocumentsList() {
+      const docsList = document.getElementById('doc-list');
+      const docsCard = document.getElementById('documents-card');
+      const emptyState = document.getElementById('empty-state');
+      const docCount = document.getElementById('doc-count');
+
+      if (documents.length > 0) {
+        emptyState.classList.add('hidden');
+        docsCard.classList.remove('hidden');
+        docCount.textContent = documents.length;
+
+        docsList.innerHTML = documents.map((doc, idx) => `
+          <div class="doc-item">
+            <div class="doc-info">
+              <span style="font-size: 20px;">📄</span>
+              <div>
+                <div class="doc-name">${escapeHtml(doc.name)}</div>
+                <div class="doc-size">${formatFileSize(doc.size)}</div>
+              </div>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        emptyState.classList.remove('hidden');
+        docsCard.classList.add('hidden');
+      }
+    }
+
+    async function handleRebuild(event) {
+      if (loading) return;
+      loading = true;
+
+      const rebuildBtn = event.target.closest('button');
+      rebuildBtn.disabled = true;
+      rebuildBtn.innerHTML = '⏳ Rebuilding...';
+
+      const progress = document.getElementById('upload-progress');
+      progress.textContent = 'Rebuilding vector database...';
+      progress.classList.remove('hidden');
+
+      try {
+        console.log('Sending rebuild request...');
+        const response = await fetch(`${API_URL}/rebuild`, {
+          method: 'POST',
+        });
+
+        console.log('Response status:', response.status);
+        const data = await response.json();
+        console.log('Response data:', data);
+
+        if (response.ok) {
+          alert(`✅ ${data.message}\nTotal vectors: ${data.total_vectors}`);
+          await fetchStats();
+        } else {
+          alert(`Failed to rebuild database: ${data.error || 'Unknown error'}`);
+        }
+      } catch (error) {
+        console.error('Rebuild error:', error);
+        alert(`Error: ${error.message}`);
+      } finally {
+        loading = false;
+        rebuildBtn.disabled = false;
+        rebuildBtn.innerHTML = '🔄 Rebuild Database';
+        progress.classList.add('hidden');
+      }
+    }
+
+    async function handleTextQuery() {
+      const queryInput = document.getElementById('query-input');
+      const query = queryInput.value.trim();
+      
+      if (!query || loading) return;
+
+      loading = true;
+      const askBtn = document.getElementById('ask-btn');
+      askBtn.disabled = true;
+      askBtn.innerHTML = '⏳ Processing...';
+
+      document.getElementById('answer-card').classList.add('hidden');
+
+      try {
+        const response = await fetch(`${API_URL}/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: query }),
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          displayAnswer(data);
+        } else {
+          alert(data.error || 'Query failed');
+        }
+      } catch (error) {
+        alert(`Error: ${error.message}\n\nMake sure the Flask backend is running on ${API_URL}`);
+      } finally {
+        loading = false;
+        askBtn.disabled = false;
+        askBtn.innerHTML = '💬 Ask Question';
+      }
+    }
+
+    async function handleVoiceQuery(event) {
+      const file = event.target.files[0];
+      if (!file || loading) return;
+
+      loading = true;
+      document.getElementById('answer-card').classList.add('hidden');
+
+      const formData = new FormData();
+      formData.append('audio', file);
+
+      try {
+        const response = await fetch(`${API_URL}/query/voice`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          const transcription = data.transcription || '';
+          document.getElementById('query-input').value = transcription;
+          
+          if (transcription) {
+            const progress = document.getElementById('upload-progress');
+            progress.textContent = `🎤 Transcribed: "${transcription}"`;
+            progress.classList.remove('hidden');
+            setTimeout(() => progress.classList.add('hidden'), 5000);
+          }
+          
+          displayAnswer(data);
+        } else {
+          alert(data.error || 'Voice query failed');
+        }
+      } catch (error) {
+        alert(`Error: ${error.message}\n\nMake sure the Flask backend is running on ${API_URL}`);
+      } finally {
+        loading = false;
+        event.target.value = '';
+      }
+    }
+
+    function displayAnswer(data) {
+      document.getElementById('answer-text').textContent = data.answer;
+
+      const metadata = `
+        <div class="metadata-item">
+          <span>📈 Similarity: <strong>${(data.avg_similarity * 100).toFixed(1)}%</strong></span>
+        </div>
+        <div class="metadata-item">
+          <span>Sources: <strong>${data.num_sources}</strong></span>
+        </div>
+        <div class="metadata-item">
+          <span>Latency: <strong>${data.latency}s</strong></span>
+        </div>
+        ${data.cached ? '<div class="cached-badge">⚡ Cached</div>' : ''}
+      `;
+      document.getElementById('metadata').innerHTML = metadata;
+
+      const sourcesList = data.sources.map(source => `
+        <div class="source-item">
+          <div class="source-number">${source.id}</div>
+          <div class="source-content">
+            <div class="source-title">${escapeHtml(source.title)}</div>
+            <div class="source-meta">
+              ${source.type} • Page ${source.page} • Relevance: ${(source.relevance * 100).toFixed(1)}%
+            </div>
+          </div>
+        </div>
+      `).join('');
+      document.getElementById('sources-list').innerHTML = sourcesList;
+
+      document.getElementById('answer-card').classList.remove('hidden');
+      document.getElementById('answer-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Refresh stats every 30 seconds
+    setInterval(fetchStats, 30000);
+  </script>
+</body>
+</html>
