@@ -32,7 +32,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # ============================================================================
 
 st.set_page_config(
-    page_title="Domain-Agnostic RAG Assistant",
+    page_title="RAG Assistant",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1028,7 +1028,7 @@ def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
 # ============================================================================
 
 def main():
-    st.title("🤖 Domain-Agnostic RAG Assistant")
+    st.title("🤖 RAG Assistant")
     st.markdown("### Intelligent Document QA System")
     
     # Initialize session state
