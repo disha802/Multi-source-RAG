@@ -298,7 +298,7 @@ class UserManager:
 
 def show_login_page():
     """Display login page"""
-    st.set_page_config(page_title="Login - RAG Assistant", page_icon="🔐", layout="centered")
+    #st.set_page_config(page_title="Login - RAG Assistant", page_icon="🔐", layout="centered")
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
