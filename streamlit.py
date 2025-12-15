@@ -72,19 +72,19 @@ class RAGConfig:
     DOMAIN_METADATA_PATH = "domain_metadata"
     
     @staticmethod
-    def get_user_upload_folder(username: str) -> str:
-        """Get user-specific upload folder"""
-        return os.path.join(RAGConfig.BASE_UPLOAD_FOLDER, username)
-    
+    def get_shared_upload_folder() -> str:
+        """Get shared upload folder for all users"""
+        return RAGConfig.BASE_UPLOAD_FOLDER
+
     @staticmethod
-    def get_user_vector_db_path(username: str) -> str:
-        """Get user-specific vector DB path"""
-        return os.path.join(RAGConfig.VECTOR_DB_BASE, username)
-    
+    def get_shared_vector_db_path() -> str:
+        """Get shared vector DB path for all users"""
+        return RAGConfig.VECTOR_DB_BASE
+
     @staticmethod
-    def get_user_metadata_path(username: str) -> str:
-        """Get user-specific metadata path"""
-        return os.path.join(RAGConfig.DOMAIN_METADATA_PATH, f"{username}_metadata.json")
+    def get_shared_metadata_path() -> str:
+        """Get shared metadata path for all users"""
+        return os.path.join(RAGConfig.DOMAIN_METADATA_PATH, "shared_metadata.json")
 
 # ============================================================================
 # SECRETS VALIDATION
@@ -461,7 +461,6 @@ def show_cloud_banner():
     ℹ️ **Running on Streamlit Cloud**
     - Sessions may reset on app updates or inactivity
     - Your documents are private to your account
-    - For production use, consider self-hosting
     """)
 
 def show_login_page():
@@ -822,16 +821,16 @@ class DomainAnalyzer:
         return msg
 
 # ============================================================================
-# DOCUMENT STORAGE (USER-NAMESPACED, WITH LIMITS)
+# DOCUMENT STORAGE
 # ============================================================================
 
 class DocumentStorage:
     @staticmethod
-    def ensure_user_folders(username: str):
-        """Ensure user-specific folders exist"""
-        os.makedirs(RAGConfig.get_user_upload_folder(username), exist_ok=True)
-        os.makedirs(os.path.dirname(RAGConfig.get_user_vector_db_path(username)), exist_ok=True)
-        os.makedirs(os.path.dirname(RAGConfig.get_user_metadata_path(username)), exist_ok=True)
+    def ensure_shared_folders():
+        """Ensure shared folders exist"""
+        os.makedirs(RAGConfig.get_shared_upload_folder(), exist_ok=True)
+        os.makedirs(RAGConfig.get_shared_vector_db_path(), exist_ok=True)
+        os.makedirs(os.path.dirname(RAGConfig.get_shared_metadata_path()), exist_ok=True)
     
     @staticmethod
     def validate_upload(uploaded_files: List) -> Tuple[bool, str]:
@@ -847,20 +846,20 @@ class DocumentStorage:
         return True, "OK"
     
     @staticmethod
-    def save_uploaded_file(uploaded_file, username: str) -> str:
-        """Save uploaded file to user-specific folder"""
-        DocumentStorage.ensure_user_folders(username)
-        file_path = os.path.join(RAGConfig.get_user_upload_folder(username), uploaded_file.name)
+    def save_uploaded_file(uploaded_file) -> str:
+        """Save uploaded file to shared folder"""
+        DocumentStorage.ensure_shared_folders()
+        file_path = os.path.join(RAGConfig.get_shared_upload_folder(), uploaded_file.name)
         with open(file_path, 'wb') as f:
             f.write(uploaded_file.getbuffer())
-        logger.info(f"File saved for {username}: {uploaded_file.name}")
+        logger.info(f"File saved to shared storage: {uploaded_file.name}")
         return file_path
     
     @staticmethod
-    def get_stored_files(username: str) -> List[str]:
-        """Get all files for a user"""
-        DocumentStorage.ensure_user_folders(username)
-        folder = RAGConfig.get_user_upload_folder(username)
+    def get_stored_files() -> List[str]:
+        """Get all shared files"""
+        DocumentStorage.ensure_shared_folders()
+        folder = RAGConfig.get_shared_upload_folder()
         
         files = []
         for file in os.listdir(folder):
@@ -872,41 +871,41 @@ class DocumentStorage:
         return files
     
     @staticmethod
-    def check_document_limit(username: str) -> Tuple[bool, str]:
-        """Check if user has reached document limit"""
-        files = DocumentStorage.get_stored_files(username)
+    def check_document_limit() -> Tuple[bool, str]:
+        """Check if document limit reached"""
+        files = DocumentStorage.get_stored_files()
         if len(files) >= RAGConfig.MAX_TOTAL_DOCUMENTS:
             return False, f"Maximum {RAGConfig.MAX_TOTAL_DOCUMENTS} documents reached"
         return True, "OK"
     
     @staticmethod
-    def delete_file(filename: str, username: str):
-        """Delete file from user folder"""
-        file_path = os.path.join(RAGConfig.get_user_upload_folder(username), filename)
+    def delete_file(filename: str):
+        """Delete file from shared folder"""
+        file_path = os.path.join(RAGConfig.get_shared_upload_folder(), filename)
         if os.path.exists(file_path):
             os.remove(file_path)
-            logger.info(f"File deleted for {username}: {filename}")
+            logger.info(f"File deleted from shared storage: {filename}")
     
     @staticmethod
-    def save_domain_metadata(metadata: Dict, username: str):
-        """Save domain metadata for user (only on rebuild)"""
+    def save_domain_metadata(metadata: Dict):
+        """Save shared domain metadata"""
         try:
-            with open(RAGConfig.get_user_metadata_path(username), 'w') as f:
+            with open(RAGConfig.get_shared_metadata_path(), 'w') as f:
                 json.dump(metadata, f, indent=2)
-            logger.info(f"Domain metadata saved for {username}")
+            logger.info("Shared domain metadata saved")
         except Exception as e:
-            logger.error(f"Error saving metadata for {username}: {e}")
+            logger.error(f"Error saving shared metadata: {e}")
     
     @staticmethod
-    def load_domain_metadata(username: str) -> Optional[Dict]:
-        """Load domain metadata for user"""
-        metadata_path = RAGConfig.get_user_metadata_path(username)
+    def load_domain_metadata() -> Optional[Dict]:
+        """Load shared domain metadata"""
+        metadata_path = RAGConfig.get_shared_metadata_path()
         if os.path.exists(metadata_path):
             try:
                 with open(metadata_path, 'r') as f:
                     return json.load(f)
             except Exception as e:
-                logger.error(f"Error loading metadata for {username}: {e}")
+                logger.error(f"Error loading shared metadata: {e}")
                 return None
         return None
 
@@ -1032,41 +1031,47 @@ class VectorStoreManager:
         return vector_db, len(chunks)
     
     @staticmethod
-    def save_vector_db(vector_db, username: str):
-        """Save vector DB to user-specific path"""
+    def save_vector_db(vector_db):
+        """Save vector DB to shared path"""
         try:
-            db_path = RAGConfig.get_user_vector_db_path(username)
+            db_path = RAGConfig.get_shared_vector_db_path()
             os.makedirs(db_path, exist_ok=True)
             vector_db.save_local(db_path)
-            logger.info(f"Vector DB saved for {username}")
+            logger.info("Shared vector DB saved")
         except Exception as e:
-            logger.error(f"Error saving vector DB for {username}: {e}")
-    
+            logger.error(f"Error saving shared vector DB: {e}")
+
     @staticmethod
-    def load_vector_db(username: str):
-        """Load vector DB with auto-recovery"""
-        db_path = RAGConfig.get_user_vector_db_path(username)
+    def load_vector_db():
+        """Load shared vector DB with auto-recovery"""
+        db_path = RAGConfig.get_shared_vector_db_path()
         
         if os.path.exists(db_path):
             try:
                 embeddings = VectorStoreManager.get_embeddings()
                 vector_db = FAISS.load_local(db_path, embeddings, 
-                                           allow_dangerous_deserialization=True)
-                logger.info(f"Vector DB loaded for {username}")
+                                        allow_dangerous_deserialization=True)
+                logger.info("Shared vector DB loaded")
                 return vector_db
             except Exception as e:
-                logger.error(f"Error loading vector DB for {username}: {e}")
+                logger.error(f"Error loading shared vector DB: {e}")
                 st.warning("⚠️ Vector DB corrupted. Will rebuild automatically.")
                 return None
         else:
-            logger.info(f"No vector DB found for {username} - will build on first upload")
+            logger.info("No vector DB found - will build on first upload")
             return None
-    
+
     @staticmethod
-    def vector_db_exists(username: str) -> bool:
-        """Check if vector DB exists for user"""
-        db_path = RAGConfig.get_user_vector_db_path(username)
+    def vector_db_exists() -> bool:
+        """Check if shared vector DB exists"""
+        db_path = RAGConfig.get_shared_vector_db_path()
         return os.path.exists(db_path) and os.path.isdir(db_path)
+    
+    # @staticmethod
+    # def vector_db_exists(username: str) -> bool:
+    #     """Check if vector DB exists for user"""
+    #     db_path = RAGConfig.get_user_vector_db_path(username)
+    #     return os.path.exists(db_path) and os.path.isdir(db_path)
 
 # ============================================================================
 # RAG ASSISTANT (UNCHANGED LOGIC)
@@ -1397,7 +1402,7 @@ def manage_documents():
         st.divider()
         st.header("📚 Document Library")
         
-        stored_files = DocumentStorage.get_stored_files(username)
+        stored_files = DocumentStorage.get_stored_files()
         
         if stored_files:
             st.markdown(f"**{len(stored_files)} / {RAGConfig.MAX_TOTAL_DOCUMENTS} documents**")
@@ -1410,7 +1415,7 @@ def manage_documents():
                         st.text(filename[:30] + "..." if len(filename) > 30 else filename)
                     with col2:
                         if st.button("🗑️", key=f"del_{filename}", help="Delete"):
-                            DocumentStorage.delete_file(filename, username)
+                            DocumentStorage.delete_file(filename)
                             st.session_state.needs_rebuild = True
                             logger.info(f"Document deleted by {username}: {filename}")
                             st.rerun()
@@ -1418,7 +1423,7 @@ def manage_documents():
             st.info("No documents yet")
         
         # Check document limit
-        can_upload, limit_msg = DocumentStorage.check_document_limit(username)
+        can_upload, limit_msg = DocumentStorage.check_document_limit()
         
         st.divider()
         st.subheader("➕ Add Documents")
@@ -1444,7 +1449,7 @@ def manage_documents():
                 elif st.button("💾 Add to Library", use_container_width=True):
                     with st.spinner("Saving documents..."):
                         for file in new_files:
-                            DocumentStorage.save_uploaded_file(file, username)
+                            DocumentStorage.save_uploaded_file(file)
                         st.session_state.needs_rebuild = True
                         st.success(f"✅ Added {len(new_files)} document(s)")
                         logger.info(f"{len(new_files)} documents uploaded by {username}")
@@ -1590,14 +1595,14 @@ def main():
     manage_documents()
     
     # Load documents
-    stored_files = DocumentStorage.get_stored_files(username)
+    stored_files = DocumentStorage.get_stored_files()
     
     if not stored_files:
         st.info("📚 No documents in your library. Please add documents using the sidebar.")
         st.stop()
     
     # Check if vector DB exists
-    vector_db_exists = VectorStoreManager.vector_db_exists(username)
+    vector_db_exists = VectorStoreManager.vector_db_exists()
     
     # Auto-recovery: rebuild if vector DB missing
     if not vector_db_exists and not st.session_state.needs_rebuild:
@@ -1622,11 +1627,11 @@ def main():
                 
                 # Analyze domain
                 domain_metadata = DomainAnalyzer.analyze_document_collection(documents)
-                DocumentStorage.save_domain_metadata(domain_metadata, username)
+                DocumentStorage.save_domain_metadata(domain_metadata)
                 
                 # Create vector DB
                 vector_db, num_chunks = VectorStoreManager.create_vector_db(documents)
-                VectorStoreManager.save_vector_db(vector_db, username)
+                VectorStoreManager.save_vector_db(vector_db)
                 
                 st.session_state.vector_db = vector_db
                 st.session_state.num_documents = len(documents)
@@ -1646,12 +1651,12 @@ def main():
     # Load existing vector DB if not in session
     if 'vector_db' not in st.session_state:
         with st.spinner("📂 Loading vector store..."):
-            vector_db = VectorStoreManager.load_vector_db(username)
+            vector_db = VectorStoreManager.load_vector_db()
             if vector_db:
                 st.session_state.vector_db = vector_db
                 
                 # Load metadata
-                domain_metadata = DocumentStorage.load_domain_metadata(username)
+                domain_metadata = DocumentStorage.load_domain_metadata()
                 if domain_metadata:
                     st.session_state.domain_metadata = domain_metadata
                     st.session_state.num_documents = domain_metadata.get('total_documents', len(stored_files))
