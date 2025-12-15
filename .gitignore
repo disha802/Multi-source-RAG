@@ -22,7 +22,7 @@ instance/
 .env
 .venv
 RAG/
-
+.streamlit
 
 # Uploads & Database
 uploads/
