@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: multi-source-rag
-    env: python
-    runtime: python-3.12
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
