@@ -1,0 +1,30 @@
+{
+  "admin": {
+    "password_hash": "d081e751e347d469c75b34d3788a5521bf9c67a8069698aeb29a748e40786644",
+    "salt": "c44deea24fd4c5d7b52bcfebb05a601f",
+    "role": "superuser",
+    "email": "admin@example.com",
+    "created_at": "2025-12-15T10:08:14.613949",
+    "last_login": "2025-12-15T10:08:22.869169",
+    "profile": {
+      "age": "",
+      "interests": "",
+      "response_style": "Professional",
+      "use_analogies": true
+    }
+  },
+  "user1": {
+    "password_hash": "62dec878fe59c4d6fd0abe4e43429eaf3c2cd64ebb834a9f481e1cc3ce1ed0cd",
+    "salt": "339210ff47fc77ca00dd95e1b7749968",
+    "role": "user",
+    "email": "user1@example.com",
+    "created_at": "2025-12-15T10:09:12.791398",
+    "last_login": "2025-12-15T10:09:33.718409",
+    "profile": {
+      "age": "",
+      "interests": "",
+      "response_style": "Professional",
+      "use_analogies": true
+    }
+  }
+}

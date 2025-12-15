@@ -1,0 +1,21 @@
+empID,name,role,landline,email,office_location
+E001,Alice Johnson,Software Engineer,555-2101,alice.johnson@example.com,New York
+E002,Brandon Smith,Product Manager,555-2102,brandon.smith@example.com,New York
+E003,Cynthia Lee,UI/UX Designer,555-2103,cynthia.lee@example.com,Chicago
+E004,David Thompson,Data Analyst,555-2104,david.thompson@example.com,Chicago
+E005,Elena Martinez,HR Specialist,555-2105,elena.martinez@example.com,Los Angeles
+E006,Frank Williams,Backend Developer,555-2106,frank.williams@example.com,Los Angeles
+E007,Grace Nguyen,QA Engineer,555-2107,grace.nguyen@example.com,Austin
+E008,Henry Carter,DevOps Engineer,555-2108,henry.carter@example.com,Austin
+E009,Ivy Patel,Business Analyst,555-2109,ivy.patel@example.com,Seattle
+E010,Jason Lee,Technical Writer,555-2110,jason.lee@example.com,Seattle
+E011,Karen Wright,Project Coordinator,555-2111,karen.wright@example.com,Denver
+E012,Liam Murphy,System Administrator,555-2112,liam.murphy@example.com,Denver
+E013,Mia Chen,Frontend Developer,555-2113,mia.chen@example.com,Boston
+E014,Noah Davis,Solutions Architect,555-2114,noah.davis@example.com,Boston
+E015,Olivia Roberts,Marketing Specialist,555-2115,olivia.roberts@example.com,San Francisco
+E016,Peter Gomez,Security Analyst,555-2116,peter.gomez@example.com,San Francisco
+E017,Quinn Howard,IT Support Technician,555-2117,quinn.howard@example.com,Miami
+E018,Rachel Brooks,Finance Manager,555-2118,rachel.brooks@example.com,Miami
+E019,Samuel Ortiz,Cloud Engineer,555-2119,samuel.ortiz@example.com,Portland
+E020,Tina Adams,Operations Manager,555-2120,tina.adams@example.com,Portland

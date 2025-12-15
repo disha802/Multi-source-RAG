@@ -1,6 +1,6 @@
 """
 Enhanced Domain-Agnostic RAG Assistant - Streamlit Web Application
-Multi-format document QA system with intelligent domain detection and adaptation
+Multi-format document QA system with authentication and user management
 """
 
 import streamlit as st
@@ -9,9 +9,11 @@ import re
 import time
 import hashlib
 import json
+import secrets
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from collections import Counter
+from datetime import datetime, timedelta
 
 # LangChain
 from langchain_community.document_loaders import (
@@ -30,6 +32,396 @@ from groq import Groq
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ============================================================================
+# AUTHENTICATION & USER MANAGEMENT
+# ============================================================================
+
+class PasswordHasher:
+    """Secure password hashing using SHA-256 with salt"""
+    
+    @staticmethod
+    def hash_password(password: str, salt: str = None) -> Tuple[str, str]:
+        """Hash password with salt"""
+        if salt is None:
+            salt = secrets.token_hex(16)
+        
+        pwd_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+        return pwd_hash, salt
+    
+    @staticmethod
+    def verify_password(password: str, stored_hash: str, salt: str) -> bool:
+        """Verify password against stored hash"""
+        pwd_hash, _ = PasswordHasher.hash_password(password, salt)
+        return pwd_hash == stored_hash
+
+class UserManager:
+    """Manages user accounts, authentication, and profiles"""
+    
+    USERS_FILE = "users.json"
+    SESSIONS_FILE = "sessions.json"
+    SESSION_TIMEOUT_HOURS = 24
+    
+    @staticmethod
+    def initialize():
+        """Initialize user system with default superuser"""
+        if not os.path.exists(UserManager.USERS_FILE):
+            # Create default superuser
+            pwd_hash, salt = PasswordHasher.hash_password("admin123")
+            users = {
+                "admin": {
+                    "password_hash": pwd_hash,
+                    "salt": salt,
+                    "role": "superuser",
+                    "email": "admin@example.com",
+                    "created_at": datetime.now().isoformat(),
+                    "last_login": None,
+                    "profile": {
+                        "age": "",
+                        "interests": "",
+                        "response_style": "Professional",
+                        "use_analogies": True
+                    }
+                }
+            }
+            UserManager._save_users(users)
+    
+    @staticmethod
+    def _load_users() -> Dict:
+        """Load all users"""
+        if os.path.exists(UserManager.USERS_FILE):
+            try:
+                with open(UserManager.USERS_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+    
+    @staticmethod
+    def _save_users(users: Dict):
+        """Save users to file"""
+        with open(UserManager.USERS_FILE, 'w') as f:
+            json.dump(users, f, indent=2)
+    
+    @staticmethod
+    def _load_sessions() -> Dict:
+        """Load active sessions"""
+        if os.path.exists(UserManager.SESSIONS_FILE):
+            try:
+                with open(UserManager.SESSIONS_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+    
+    @staticmethod
+    def _save_sessions(sessions: Dict):
+        """Save sessions to file"""
+        with open(UserManager.SESSIONS_FILE, 'w') as f:
+            json.dump(sessions, f, indent=2)
+    
+    @staticmethod
+    def authenticate(username: str, password: str) -> Tuple[bool, Optional[str]]:
+        """Authenticate user credentials"""
+        users = UserManager._load_users()
+        
+        if username not in users:
+            return False, "Invalid username or password"
+        
+        user = users[username]
+        if PasswordHasher.verify_password(password, user['password_hash'], user['salt']):
+            # Update last login
+            users[username]['last_login'] = datetime.now().isoformat()
+            UserManager._save_users(users)
+            
+            # Create session
+            session_token = secrets.token_urlsafe(32)
+            sessions = UserManager._load_sessions()
+            sessions[session_token] = {
+                'username': username,
+                'created_at': datetime.now().isoformat(),
+                'expires_at': (datetime.now() + timedelta(hours=UserManager.SESSION_TIMEOUT_HOURS)).isoformat()
+            }
+            UserManager._save_sessions(sessions)
+            
+            return True, session_token
+        
+        return False, "Invalid username or password"
+    
+    @staticmethod
+    def verify_session(session_token: str) -> Optional[str]:
+        """Verify session token and return username if valid"""
+        sessions = UserManager._load_sessions()
+        
+        if session_token not in sessions:
+            return None
+        
+        session = sessions[session_token]
+        expires_at = datetime.fromisoformat(session['expires_at'])
+        
+        if datetime.now() > expires_at:
+            # Session expired
+            del sessions[session_token]
+            UserManager._save_sessions(sessions)
+            return None
+        
+        return session['username']
+    
+    @staticmethod
+    def logout(session_token: str):
+        """Logout user by removing session"""
+        sessions = UserManager._load_sessions()
+        if session_token in sessions:
+            del sessions[session_token]
+            UserManager._save_sessions(sessions)
+    
+    @staticmethod
+    def get_user_data(username: str) -> Optional[Dict]:
+        """Get user data"""
+        users = UserManager._load_users()
+        return users.get(username)
+    
+    @staticmethod
+    def update_user_profile(username: str, profile: Dict):
+        """Update user profile"""
+        users = UserManager._load_users()
+        if username in users:
+            users[username]['profile'] = profile
+            UserManager._save_users(users)
+    
+    @staticmethod
+    def is_superuser(username: str) -> bool:
+        """Check if user is superuser"""
+        user = UserManager.get_user_data(username)
+        return user and user.get('role') == 'superuser'
+    
+    @staticmethod
+    def create_user(username: str, password: str, email: str, role: str = "user") -> Tuple[bool, str]:
+        """Create new user (superuser only)"""
+        users = UserManager._load_users()
+        
+        if username in users:
+            return False, "Username already exists"
+        
+        if len(password) < 6:
+            return False, "Password must be at least 6 characters"
+        
+        pwd_hash, salt = PasswordHasher.hash_password(password)
+        users[username] = {
+            "password_hash": pwd_hash,
+            "salt": salt,
+            "role": role,
+            "email": email,
+            "created_at": datetime.now().isoformat(),
+            "last_login": None,
+            "profile": {
+                "age": "",
+                "interests": "",
+                "response_style": "Professional",
+                "use_analogies": True
+            }
+        }
+        UserManager._save_users(users)
+        return True, "User created successfully"
+    
+    @staticmethod
+    def delete_user(username: str) -> Tuple[bool, str]:
+        """Delete user (superuser only)"""
+        users = UserManager._load_users()
+        
+        if username not in users:
+            return False, "User not found"
+        
+        if users[username].get('role') == 'superuser':
+            return False, "Cannot delete superuser account"
+        
+        del users[username]
+        UserManager._save_users(users)
+        return True, "User deleted successfully"
+    
+    @staticmethod
+    def reset_password(username: str, new_password: str) -> Tuple[bool, str]:
+        """Reset user password (superuser only)"""
+        users = UserManager._load_users()
+        
+        if username not in users:
+            return False, "User not found"
+        
+        if len(new_password) < 6:
+            return False, "Password must be at least 6 characters"
+        
+        pwd_hash, salt = PasswordHasher.hash_password(new_password)
+        users[username]['password_hash'] = pwd_hash
+        users[username]['salt'] = salt
+        UserManager._save_users(users)
+        
+        return True, "Password reset successfully"
+    
+    @staticmethod
+    def change_password(username: str, old_password: str, new_password: str) -> Tuple[bool, str]:
+        """Change own password"""
+        users = UserManager._load_users()
+        
+        if username not in users:
+            return False, "User not found"
+        
+        user = users[username]
+        if not PasswordHasher.verify_password(old_password, user['password_hash'], user['salt']):
+            return False, "Current password is incorrect"
+        
+        if len(new_password) < 6:
+            return False, "New password must be at least 6 characters"
+        
+        pwd_hash, salt = PasswordHasher.hash_password(new_password)
+        users[username]['password_hash'] = pwd_hash
+        users[username]['salt'] = salt
+        UserManager._save_users(users)
+        
+        return True, "Password changed successfully"
+    
+    @staticmethod
+    def list_users() -> List[Dict]:
+        """List all users (superuser only)"""
+        users = UserManager._load_users()
+        user_list = []
+        for username, data in users.items():
+            user_list.append({
+                'username': username,
+                'email': data.get('email', ''),
+                'role': data.get('role', 'user'),
+                'created_at': data.get('created_at', ''),
+                'last_login': data.get('last_login', 'Never')
+            })
+        return user_list
+
+# ============================================================================
+# STREAMLIT AUTH UI
+# ============================================================================
+
+def show_login_page():
+    """Display login page"""
+    st.set_page_config(page_title="Login - RAG Assistant", page_icon="🔐", layout="centered")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔐 RAG Assistant")
+        st.markdown("### Login")
+        
+        with st.form("login_form"):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            submit = st.form_submit_button("🔓 Login", use_container_width=True)
+            
+            if submit:
+                if not username or not password:
+                    st.error("Please enter both username and password")
+                else:
+                    success, result = UserManager.authenticate(username, password)
+                    if success:
+                        st.session_state.session_token = result
+                        st.session_state.username = username
+                        st.success("✅ Login successful!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {result}")
+        
+        #st.divider()
+        #st.info("🆕 Default superuser: admin / admin123\n\nℹ️ Please change the default password after first login")
+
+def show_user_management():
+    """Display user management interface (superuser only)"""
+    if not UserManager.is_superuser(st.session_state.username):
+        return
+    
+    with st.sidebar:
+        st.divider()
+        st.header("👥 User Management")
+        
+        with st.expander("➕ Create New User", expanded=False):
+            with st.form("create_user_form"):
+                new_username = st.text_input("Username")
+                new_email = st.text_input("Email")
+                new_password = st.text_input("Password", type="password")
+                new_role = st.selectbox("Role", ["user", "superuser"])
+                
+                if st.form_submit_button("Create User", use_container_width=True):
+                    success, message = UserManager.create_user(new_username, new_password, new_email, new_role)
+                    if success:
+                        st.success(f"✅ {message}")
+                    else:
+                        st.error(f"❌ {message}")
+        
+        with st.expander("📋 View All Users", expanded=False):
+            users = UserManager.list_users()
+            for user in users:
+                st.markdown(f"**{user['username']}** ({user['role']})")
+                st.caption(f"Email: {user['email']} | Last login: {user['last_login']}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if user['role'] != 'superuser' and st.button(f"🗑️ Delete", key=f"del_{user['username']}"):
+                        success, message = UserManager.delete_user(user['username'])
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                with col2:
+                    if st.button(f"🔑 Reset Pwd", key=f"reset_{user['username']}"):
+                        st.session_state[f"reset_user_{user['username']}"] = True
+                
+                if st.session_state.get(f"reset_user_{user['username']}", False):
+                    with st.form(f"reset_form_{user['username']}"):
+                        new_pwd = st.text_input("New Password", type="password", key=f"newpwd_{user['username']}")
+                        if st.form_submit_button("Reset", use_container_width=True):
+                            success, message = UserManager.reset_password(user['username'], new_pwd)
+                            if success:
+                                st.success(message)
+                                st.session_state[f"reset_user_{user['username']}"] = False
+                                st.rerun()
+                            else:
+                                st.error(message)
+                
+                st.divider()
+
+def show_user_settings():
+    """Display user settings and profile"""
+    with st.sidebar:
+        st.divider()
+        st.header(f"👤 {st.session_state.username}")
+        
+        user_data = UserManager.get_user_data(st.session_state.username)
+        if user_data:
+            st.caption(f"Role: {user_data.get('role', 'user')}")
+            st.caption(f"Email: {user_data.get('email', '')}")
+        
+        with st.expander("🔑 Change Password", expanded=False):
+            with st.form("change_password_form"):
+                old_pwd = st.text_input("Current Password", type="password")
+                new_pwd = st.text_input("New Password", type="password")
+                confirm_pwd = st.text_input("Confirm New Password", type="password")
+                
+                if st.form_submit_button("Update Password", use_container_width=True):
+                    if new_pwd != confirm_pwd:
+                        st.error("New passwords don't match")
+                    else:
+                        success, message = UserManager.change_password(
+                            st.session_state.username, old_pwd, new_pwd
+                        )
+                        if success:
+                            st.success(f"✅ {message}")
+                        else:
+                            st.error(f"❌ {message}")
+        
+        if st.button("🚪 Logout", use_container_width=True):
+            UserManager.logout(st.session_state.session_token)
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+# ============================================================================
+# EXISTING RAG CODE (UNCHANGED)
+# ============================================================================
 
 st.set_page_config(
     page_title="RAG Assistant",
@@ -37,8 +429,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# ============================================================================
 
 class RAGConfig:
     CHUNK_SIZE = 500
@@ -53,24 +443,20 @@ class RAGConfig:
     SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.xls', '.csv', '.txt']
     UPLOAD_FOLDER = "upload"
     VECTOR_DB_PATH = "vector_store"
-    USER_PROFILES_PATH = "user_profiles.json"
     DOMAIN_METADATA_PATH = "domain_metadata.json"
 
-# ============================================================================
-
 def extract_section_from_text(text: str) -> str:
-    """Extract section headers intelligently from any document type"""
     if not text or len(text.strip()) == 0:
         return "Empty Content"
     
     patterns = [
-        r'^#{1,3}\s+(.+)$',  # Markdown headers
-        r'^(SECTION|CHAPTER|PART|ARTICLE)\s+[\d\w]+[:\s]+(.+)$',  # Formal sections
-        r'^\d+\.\s+([A-Z][A-Za-z\s]{3,})$',  # Numbered sections
-        r'^([A-Z][A-Z\s]{5,})$',  # ALL CAPS headers
+        r'^#{1,3}\s+(.+)$',
+        r'^(SECTION|CHAPTER|PART|ARTICLE)\s+[\d\w]+[:\s]+(.+)$',
+        r'^\d+\.\s+([A-Z][A-Za-z\s]{3,})$',
+        r'^([A-Z][A-Z\s]{5,})$',
     ]
     
-    lines = text.split('\n')[:20]  # Check more lines for better detection
+    lines = text.split('\n')[:20]
     for line in lines:
         line_clean = line.strip()
         if len(line_clean) < 3 or len(line_clean) > 100:
@@ -82,7 +468,6 @@ def extract_section_from_text(text: str) -> str:
                 section = match.group(1) if match.lastindex == 1 else match.group(2)
                 return section.strip()[:100]
     
-    # Fallback: use first substantial line
     for line in lines:
         if len(line.strip()) > 10:
             return line.strip()[:100]
@@ -90,11 +475,9 @@ def extract_section_from_text(text: str) -> str:
     return "General Content"
 
 def calculate_similarity_score(distance: float) -> float:
-    """Convert FAISS L2 distance to similarity percentage"""
     return 1 / (1 + distance)
 
 def assess_confidence(similarity_scores: List[float]) -> Tuple[str, str]:
-    """Assess retrieval confidence based on similarity"""
     avg_sim = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0
     
     if avg_sim > 0.7:
@@ -105,7 +488,6 @@ def assess_confidence(similarity_scores: List[float]) -> Tuple[str, str]:
         return "LOW", "🔴"
 
 def detect_hallucination_risk(answer: str, num_sources: int, avg_similarity: float) -> Tuple[str, str]:
-    """Detect potential hallucination in responses"""
     has_citations = any(f"Source {i+1}" in answer for i in range(num_sources))
     
     uncertainty_phrases = [
@@ -121,11 +503,7 @@ def detect_hallucination_risk(answer: str, num_sources: int, avg_similarity: flo
     else:
         return "LOW ✅", ""
 
-# ============================================================================
-
 class DomainAnalyzer:
-    """Analyzes document collection to understand domain and context"""
-    
     INTENT_EXAMPLES = {
         "document_related": [
             "summarize the document",
@@ -167,49 +545,39 @@ class DomainAnalyzer:
 
     @staticmethod
     def semantic_intent_classify(query: str, embeddings_model) -> str:
-        """Classify query intent using embedding similarity."""
         query_emb = embeddings_model.embed_query(query)
-
         best_category = None
         best_sim = -1
 
         for category, examples in DomainAnalyzer.INTENT_EXAMPLES.items():
             for ex in examples:
                 ex_emb = embeddings_model.embed_query(ex)
-                sim = sum(a*b for a,b in zip(query_emb, ex_emb))  # dot product since embeddings normalized
+                sim = sum(a*b for a,b in zip(query_emb, ex_emb))
                 if sim > best_sim:
                     best_sim = sim
                     best_category = category
 
         return best_category
-
     
     @staticmethod
     def analyze_document_collection(documents: List[Document]) -> Dict:
-        """Perform comprehensive domain analysis"""
-        
-        # Extract key terms and frequencies
         all_text = " ".join([doc.page_content[:1000] for doc in documents[:20]])
         words = re.findall(r'\b[A-Za-z]{4,}\b', all_text.lower())
         word_freq = Counter(words)
         
-        # Remove common stopwords
         stopwords = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 
                     'will', 'would', 'could', 'should', 'about', 'which', 'their',
                     'there', 'where', 'when', 'what', 'these', 'those'}
         filtered_freq = {k: v for k, v in word_freq.items() if k not in stopwords}
         
-        # Get top keywords
         top_keywords = [word for word, freq in sorted(filtered_freq.items(), 
                        key=lambda x: x[1], reverse=True)[:100]]
         
-        # Detect document types
         doc_types = {}
         for doc in documents:
             doc_type = doc.metadata.get('source_type', 'Unknown')
             doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
         
-        # Detect domain characteristics
         domain_indicators = DomainAnalyzer._detect_domain_type(top_keywords, documents)
         
         return {
@@ -224,9 +592,6 @@ class DomainAnalyzer:
     
     @staticmethod
     def _detect_domain_type(keywords: List[str], documents: List[Document]) -> Dict:
-        """Detect the likely domain/field of the document collection"""
-        
-        # Domain keyword patterns
         domain_patterns = {
             'Finance/Business': ['revenue', 'profit', 'market', 'investment', 'financial', 
                                 'sales', 'cost', 'business', 'company', 'stock'],
@@ -242,36 +607,30 @@ class DomainAnalyzer:
                                      'component', 'function', 'parameter', 'technical']
         }
         
-        # Calculate domain scores
         domain_scores = {}
         for domain, patterns in domain_patterns.items():
             score = sum(1 for keyword in keywords[:50] if keyword in patterns)
             domain_scores[domain] = score
         
-        # Determine primary domain
         if max(domain_scores.values()) > 0:
             primary_domain = max(domain_scores, key=domain_scores.get)
-            confidence = domain_scores[primary_domain] / 10  # Normalize
+            confidence = domain_scores[primary_domain] / 10
             confidence = min(confidence, 1.0)
         else:
             primary_domain = "General/Mixed"
             confidence = 0.5
         
-        # Extract characteristics
         characteristics = []
         
-        # Check for tabular data
         tabular_count = sum(1 for doc in documents[:10] 
                           if doc.metadata.get('source_type') in ['CSV', 'Excel'])
         if tabular_count > len(documents) * 0.3:
             characteristics.append("Heavy tabular/numerical data")
         
-        # Check for technical language
         technical_terms = ['system', 'process', 'method', 'function', 'parameter']
         if sum(1 for k in keywords[:30] if k in technical_terms) > 5:
             characteristics.append("Technical documentation")
         
-        # Check document length
         avg_length = sum(len(doc.page_content) for doc in documents[:10]) / min(len(documents), 10)
         if avg_length > 3000:
             characteristics.append("Detailed/lengthy content")
@@ -285,62 +644,10 @@ class DomainAnalyzer:
             'domain_scores': domain_scores
         }
 
-    # @staticmethod
-    # def check_query_relevance(query: str, domain_metadata: Dict, 
-    #                          context_similarity: float) -> Tuple[bool, Optional[str]]:
-    #     """Check if query is relevant to the document domain"""
-        
-    #     # High similarity = definitely relevant
-    #     if context_similarity > 0.6:
-    #         return True, None
-        
-    #     # Detect obviously off-topic queries (entertainment, general knowledge, etc.)
-    #     off_topic_patterns = {
-    #         'entertainment': ['movie', 'film', 'tv show', 'series', 'netflix', 'actor', 'actress', 
-    #                         'music', 'song', 'album', 'band', 'singer', 'concert', 'game', 'video game'],
-    #         'general_knowledge': ['who is', 'who was', 'when did', 'where is', 'what is the capital',
-    #                             'how tall', 'how old', 'birthday', 'famous for'],
-    #         'personal': ['weather', 'temperature', 'forecast', 'restaurant', 'recipe', 'cook'],
-    #         'current_events': ['news today', 'latest news', 'current events', 'breaking news']
-    #     }
-        
-    #     query_lower = query.lower()
-        
-    #     # Check for obviously off-topic patterns
-    #     for category, patterns in off_topic_patterns.items():
-    #         if any(pattern in query_lower for pattern in patterns):
-    #             # Entertainment / personal / news queries are ALWAYS out-of-domain
-    #             if category in ['entertainment', 'personal', 'current_events']:
-    #                 return False, DomainAnalyzer._generate_gentle_refusal(query, domain_metadata)
-
-    #             # For general-knowledge, still check overlap
-    #             domain_words = set(domain_metadata.get('keywords', [])[:100])
-    #             query_words = set(re.findall(r'\b[A-Za-z]{4,}\b', query_lower))
-    #             overlap = len(query_words & domain_words)
-    #             if overlap < 2:
-    #                 return False, DomainAnalyzer._generate_gentle_refusal(query, domain_metadata)
-
-        
-    #     # Extract query terms
-    #     query_words = set(re.findall(r'\b[A-Za-z]{4,}\b', query_lower))
-    #     domain_words = set(domain_metadata.get('keywords', [])[:100])
-        
-    #     # Calculate overlap
-    #     overlap = len(query_words & domain_words)
-    #     overlap_ratio = overlap / len(query_words) if query_words else 0
-        
-    #     # Low similarity AND low overlap = likely out of domain
-    #     if context_similarity < 0.4 and overlap_ratio < 0.2:
-    #         return False, DomainAnalyzer._generate_gentle_refusal(query, domain_metadata)
-        
-    #     return True, None
-
     @staticmethod
     def check_query_relevance(query: str, domain_metadata: Dict, context_similarity: float) -> Tuple[bool, Optional[str]]:
-
         query_lower = query.lower()
 
-        # 1. Hard-block categories (instant OOD)
         hard_block_keywords = [
             "netflix", "movie", "film", "anime", "tv show", "series",
             "celebrity", "concert", "tiktok", "instagram",
@@ -351,18 +658,15 @@ class DomainAnalyzer:
         if any(k in query_lower for k in hard_block_keywords):
             return False, DomainAnalyzer._generate_gentle_refusal(query, domain_metadata)
 
-        # 2. Semantic classification
         embeddings = VectorStoreManager.get_embeddings()
         intent = DomainAnalyzer.semantic_intent_classify(query, embeddings)
 
         if intent in ["entertainment", "news", "personal"]:
             return False, DomainAnalyzer._generate_gentle_refusal(query, domain_metadata)
 
-        # 3. High-similarity override
         if context_similarity > 0.60:
             return True, None
 
-        # 4. Low-overlap + low-similarity → OOD
         domain_words = set(domain_metadata.get('keywords', [])[:100])
         query_words = set(re.findall(r'\b[A-Za-z]{4,}\b', query_lower))
         overlap = len(query_words & domain_words)
@@ -375,8 +679,6 @@ class DomainAnalyzer:
 
     @staticmethod
     def _generate_gentle_refusal(query: str, domain_metadata: Dict) -> str:
-        """Generate a kind, helpful OOD message when query is off-scope."""
-
         top_keywords = domain_metadata.get('keywords', [])[:5]
 
         msg = (
@@ -394,59 +696,7 @@ class DomainAnalyzer:
 
         return msg
 
-
-    # @staticmethod
-    # def _generate_gentle_refusal(query: str, domain_metadata: Dict) -> str:
-    #     """Generate a gentle, helpful refusal for out-of-domain queries"""
-        
-    #     # Get document scope info without explicitly mentioning "domain"
-    #     top_keywords = domain_metadata.get('keywords', [])[:5]
-        
-    #     refusal = "I'd be happy to help, but that question appears to be outside the scope of your uploaded documents. 📄\n\n"
-        
-    #     if top_keywords:
-    #         refusal += f"Your documents cover topics like: **{', '.join(top_keywords[:3])}**\n\n"
-        
-    #     refusal += "💡 **I can help you with questions about:**\n"
-    #     refusal += "- Information contained in your documents\n"
-    #     refusal += "- Summaries of specific sections\n"
-    #     refusal += "- Details about the topics covered\n\n"
-    #     refusal += "Feel free to ask me anything related to the content you've uploaded!"
-        
-    #     return refusal
-
-# ============================================================================
-
-class UserProfileManager:
-    """Manages user personalization profiles"""
-    
-    @staticmethod
-    def load_profiles() -> Dict:
-        if os.path.exists(RAGConfig.USER_PROFILES_PATH):
-            try:
-                with open(RAGConfig.USER_PROFILES_PATH, 'r') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-    
-    @staticmethod
-    def save_profile(user_id: str, profile: Dict):
-        profiles = UserProfileManager.load_profiles()
-        profiles[user_id] = profile
-        with open(RAGConfig.USER_PROFILES_PATH, 'w') as f:
-            json.dump(profiles, f, indent=2)
-    
-    @staticmethod
-    def get_profile(user_id: str) -> Optional[Dict]:
-        profiles = UserProfileManager.load_profiles()
-        return profiles.get(user_id)
-
-# ============================================================================
-
 class DocumentStorage:
-    """Manages persistent document storage"""
-    
     @staticmethod
     def ensure_upload_folder():
         os.makedirs(RAGConfig.UPLOAD_FOLDER, exist_ok=True)
@@ -479,13 +729,11 @@ class DocumentStorage:
     
     @staticmethod
     def save_domain_metadata(metadata: Dict):
-        """Save domain analysis metadata"""
         with open(RAGConfig.DOMAIN_METADATA_PATH, 'w') as f:
             json.dump(metadata, f, indent=2)
     
     @staticmethod
     def load_domain_metadata() -> Optional[Dict]:
-        """Load domain analysis metadata"""
         if os.path.exists(RAGConfig.DOMAIN_METADATA_PATH):
             try:
                 with open(RAGConfig.DOMAIN_METADATA_PATH, 'r') as f:
@@ -493,8 +741,6 @@ class DocumentStorage:
             except:
                 return None
         return None
-
-# ============================================================================
 
 class DocumentLoader:
     @staticmethod
@@ -573,8 +819,6 @@ class DocumentLoader:
         
         return docs
 
-# ============================================================================
-
 class VectorStoreManager:
     @staticmethod
     @st.cache_resource
@@ -617,8 +861,6 @@ class VectorStoreManager:
             return FAISS.load_local(RAGConfig.VECTOR_DB_PATH, embeddings, 
                                    allow_dangerous_deserialization=True)
         return None
-
-# ============================================================================
 
 class RAGAssistant:
     def __init__(self, vector_db, groq_api_key: str, domain_metadata: Dict, 
@@ -677,7 +919,6 @@ class RAGAssistant:
         
         avg_similarity = sum(similarity_scores) / len(similarity_scores)
         
-        # Check domain relevance
         is_relevant, suggestion = DomainAnalyzer.check_query_relevance(
             question, self.domain_metadata, avg_similarity
         )
@@ -708,7 +949,6 @@ class RAGAssistant:
             answer, len(relevant_docs), avg_similarity
         )
         
-        # Add verification reminder for low confidence
         if avg_similarity < 0.6:
             top_sources = [c['title'] for c in citations[:2]]
             verification_msg = f"\n\n⚠️ **Please verify this information** with: {', '.join(top_sources)}"
@@ -747,13 +987,9 @@ class RAGAssistant:
         reraise=True
     )
     def _generate_answer(self, context: str, question: str, avg_similarity: float) -> str:
-        # Build domain-aware context
         domain_context = self._build_domain_context()
-        
-        # Build personalization context
         personalization = self._build_personalization_context()
         
-        # Confidence-based instruction
         confidence_instruction = ""
         if avg_similarity < 0.6:
             confidence_instruction = "\n\nIMPORTANT: Lower confidence query. Explicitly mention which sources support each claim and recommend verification."
@@ -789,7 +1025,6 @@ ANSWER (cite all sources used):"""
         return response.choices[0].message.content
     
     def _build_domain_context(self) -> str:
-        """Build domain-aware context for the LLM"""
         domain_type = self.domain_metadata.get('domain_type', 'General')
         characteristics = self.domain_metadata.get('characteristics', [])
         doc_types = self.domain_metadata.get('document_types', {})
@@ -806,7 +1041,6 @@ ANSWER (cite all sources used):"""
         return context
     
     def _build_personalization_context(self) -> str:
-        """Build personalization context with style instructions"""
         if not self.user_profile:
             return ""
         
@@ -820,12 +1054,10 @@ ANSWER (cite all sources used):"""
         
         context_parts = []
         
-        # Style instruction
         style = self.user_profile.get('response_style', 'Professional')
         if style in style_instructions:
             context_parts.append(f"\nRESPONSE STYLE: {style_instructions[style]}")
         
-        # Age-appropriate language
         if self.user_profile.get('age'):
             age = self.user_profile['age']
             if age in ['18-25', '26-35']:
@@ -833,26 +1065,20 @@ ANSWER (cite all sources used):"""
             elif age in ['56-65', '65+']:
                 context_parts.append("Use clear, well-explained language without jargon.")
         
-        # Interest-based examples
         if self.user_profile.get('interests'):
             interests = self.user_profile['interests']
             context_parts.append(f"When appropriate, relate concepts to these interests: {interests}")
         
-        # Analogy preference
         if self.user_profile.get('use_analogies', True):
             context_parts.append("Include helpful analogies or examples when they clarify concepts.")
         
-        # Important note about facts
         if context_parts:
             context_parts.insert(0, "\n--- PERSONALIZATION (adapt presentation style, NOT facts) ---")
             context_parts.append("CRITICAL: Keep all factual information accurate. Only adapt HOW you present it, not WHAT you present.")
         
         return "\n".join(context_parts) if context_parts else ""
 
-# ============================================================================
-
 def show_domain_insights():
-    """Display insights about the document collection domain"""
     if 'domain_metadata' not in st.session_state:
         return
     
@@ -863,7 +1089,6 @@ def show_domain_insights():
         st.header("📊 Document Insights")
         
         with st.expander("📈 Collection Statistics", expanded=False):
-            # Show stats without explicitly mentioning "domain"
             doc_types = metadata.get('document_types', {})
             if doc_types:
                 st.markdown("**Document Types:**")
@@ -879,39 +1104,46 @@ def show_domain_insights():
             with col2:
                 st.metric("Vocabulary", vocab_size)
             
-            # Show top keywords without domain classification
             keywords = metadata.get('keywords', [])[:8]
             if keywords:
                 st.markdown("**Key Topics:**")
                 st.markdown(", ".join(keywords))
 
 def show_personalization_form():
-    """Display user personalization form"""
+    """Display user personalization form with persistence"""
     with st.sidebar:
         st.divider()
-        st.header("👤 Personalization")
+        st.header("💤 Personalization")
+        
+        # Load current user profile
+        username = st.session_state.get('username')
+        user_data = UserManager.get_user_data(username)
+        current_profile = user_data.get('profile', {}) if user_data else {}
         
         with st.expander("🎨 Customize Response Style", expanded=False):
             st.markdown("Tailor how answers are presented to you!")
             
-            user_id = st.text_input("User ID (optional)", 
-                                   value=st.session_state.get('user_id', ''))
-            
             age_group = st.selectbox("Age Group", 
-                ["Prefer not to say", "18-25", "26-35", "36-45", "46-55", "56-65", "65+"])
+                ["Prefer not to say", "18-25", "26-35", "36-45", "46-55", "56-65", "65+"],
+                index=0 if not current_profile.get('age') else 
+                      ["Prefer not to say", "18-25", "26-35", "36-45", "46-55", "56-65", "65+"].index(current_profile.get('age', 'Prefer not to say')))
             
             response_style = st.selectbox(
                 "Response Style",
                 ["Professional", "Casual & Friendly", "Educational", "Concise & Direct", "Storytelling"],
+                index=["Professional", "Casual & Friendly", "Educational", "Concise & Direct", "Storytelling"].index(
+                    current_profile.get('response_style', 'Professional')),
                 help="Choose how you'd like answers to be presented"
             )
             
             interests = st.text_area("Areas of Interest", 
+                value=current_profile.get('interests', ''),
                 help="E.g., Finance, Technology, Healthcare",
                 placeholder="Separate with commas")
             
-            use_analogies = st.checkbox("Use analogies/examples", value=True,
-                                       help="Include relatable examples and comparisons")
+            use_analogies = st.checkbox("Use analogies/examples", 
+                value=current_profile.get('use_analogies', True),
+                help="Include relatable examples and comparisons")
             
             if st.button("💾 Save Profile", use_container_width=True):
                 profile = {
@@ -921,10 +1153,7 @@ def show_personalization_form():
                     'use_analogies': use_analogies
                 }
                 
-                if user_id:
-                    UserProfileManager.save_profile(user_id, profile)
-                    st.session_state.user_id = user_id
-                
+                UserManager.update_user_profile(username, profile)
                 st.session_state.user_profile = profile
                 st.success("✅ Profile saved!")
                 st.rerun()
@@ -940,7 +1169,6 @@ def show_personalization_form():
                 st.markdown(f"💡 Interests: {profile['interests']}")
 
 def manage_documents():
-    """Document library management interface"""
     with st.sidebar:
         st.divider()
         st.header("📚 Document Library")
@@ -985,10 +1213,7 @@ def manage_documents():
             st.session_state.needs_rebuild = True
             st.rerun()
 
-# ============================================================================
-
 def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
-    """Generate domain-appropriate suggested questions"""
     domain_type = domain_metadata.get('domain_type', 'General')
     keywords = domain_metadata.get('keywords', [])[:10]
     
@@ -997,7 +1222,6 @@ def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
         "Can you provide a summary of the key information?"
     ]
     
-    # Add domain-specific suggestions
     if 'Finance' in domain_type or 'Business' in domain_type:
         suggestions.extend([
             "What financial metrics or figures are mentioned?",
@@ -1019,25 +1243,38 @@ def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
             "What compliance requirements are mentioned?"
         ])
     else:
-        # Generic suggestions based on keywords
         if keywords:
             suggestions.append(f"Tell me about {keywords[0]} mentioned in the documents")
     
     return suggestions
 
-# ============================================================================
-
 def main():
+    # Initialize user system
+    UserManager.initialize()
+    
+    # Check authentication
+    if 'session_token' not in st.session_state:
+        show_login_page()
+        return
+    
+    # Verify session
+    username = UserManager.verify_session(st.session_state.session_token)
+    if not username:
+        st.error("Session expired. Please login again.")
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+    
+    st.session_state.username = username
+    
+    # Load user profile
+    user_data = UserManager.get_user_data(username)
+    if user_data and 'user_profile' not in st.session_state:
+        st.session_state.user_profile = user_data.get('profile', {})
+    
+    # Main application UI
     st.title("🤖 RAG Assistant")
     st.markdown("### Intelligent Document QA System")
-    
-    # Initialize session state
-    if 'user_profile' not in st.session_state:
-        user_id = st.session_state.get('user_id', '')
-        if user_id:
-            profile = UserProfileManager.get_profile(user_id)
-            if profile:
-                st.session_state.user_profile = profile
     
     if 'needs_rebuild' not in st.session_state:
         st.session_state.needs_rebuild = False
@@ -1049,6 +1286,8 @@ def main():
         
         if not groq_api_key:
             st.warning("⚠️ Please enter your Groq API key")
+            show_user_settings()
+            show_user_management()
             st.stop()
         
         st.divider()
@@ -1073,7 +1312,9 @@ def main():
                 st.session_state.cache_misses = 0
                 st.success("Cache cleared!")
     
-    # Show forms
+    # Show user settings and management
+    show_user_settings()
+    show_user_management()
     show_domain_insights()
     show_personalization_form()
     manage_documents()
@@ -1094,7 +1335,6 @@ def main():
                 st.error("No documents could be loaded.")
                 st.stop()
             
-            # Analyze domain (internal use only, not displayed)
             domain_metadata = DomainAnalyzer.analyze_document_collection(documents)
             DocumentStorage.save_domain_metadata(domain_metadata)
             
@@ -1117,7 +1357,7 @@ def main():
         st.session_state.get('user_profile')
     )
     
-    # Display metrics (removed domain display)
+    # Display metrics
     col1, col2 = st.columns(2)
     with col1:
         st.metric("📄 Documents", st.session_state.get('num_documents', 0))
