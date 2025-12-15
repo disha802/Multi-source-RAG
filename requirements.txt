@@ -29,4 +29,4 @@ tenacity==8.2.3
 python-dotenv==1.0.0
 
 # Security & Authentication
-# (Using built-in hashlib and secrets - no additional packages needed)
+bcrypt==4.1.1
