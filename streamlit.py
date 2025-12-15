@@ -411,6 +411,7 @@ def show_user_settings():
                         )
                         if success:
                             st.success(f"✅ {message}")
+                            st.balloons()
                         else:
                             st.error(f"❌ {message}")
         
