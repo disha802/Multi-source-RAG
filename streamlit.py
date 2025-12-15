@@ -325,7 +325,8 @@ def show_login_page():
                         st.error(f"❌ {result}")
         
         #st.divider()
-        #st.info("🆕 Default superuser: admin / admin123\n\nℹ️ Please change the default password after first login")
+        #st.info("🆕 Default superuser: admin / adminpass)
+        #st.info("🆕 Default user: user1 / password1)
 
 def show_user_management():
     """Display user management interface (superuser only)"""
