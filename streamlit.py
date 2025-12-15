@@ -1,6 +1,6 @@
 """
 Enhanced Domain-Agnostic RAG Assistant - Streamlit Web Application
-Multi-format document QA system with authentication and user management
+Production-ready with bcrypt, cloud optimizations, and multi-user safety
 """
 
 import streamlit as st
@@ -10,10 +10,14 @@ import time
 import hashlib
 import json
 import secrets
+import logging
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from collections import Counter
 from datetime import datetime, timedelta
+
+# Password hashing with bcrypt
+import bcrypt
 
 # LangChain
 from langchain_community.document_loaders import (
@@ -32,26 +36,101 @@ from groq import Groq
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ============================================================================
-# AUTHENTICATION & USER MANAGEMENT
+# LOGGING SETUP
+# ============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CONFIGURATION & CONSTANTS
+# ============================================================================
+
+class RAGConfig:
+    CHUNK_SIZE = 500
+    CHUNK_OVERLAP = 100
+    EMBEDDING_MODEL = "BAAI/bge-large-en"
+    LLM_MODEL = "llama-3.3-70b-versatile"
+    LLM_TEMPERATURE = 0.1
+    LLM_MAX_TOKENS = 800
+    TOP_K_RESULTS = 3
+    SIMILARITY_THRESHOLD = 0.5
+    CACHE_SIZE = 100
+    SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.xls', '.csv', '.txt']
+    
+    # Upload limits (cloud-friendly)
+    MAX_FILES_PER_UPLOAD = 10
+    MAX_FILE_SIZE_MB = 10
+    MAX_TOTAL_DOCUMENTS = 50
+    
+    # Paths
+    BASE_UPLOAD_FOLDER = "uploads"
+    VECTOR_DB_BASE = "vector_stores"
+    DOMAIN_METADATA_PATH = "domain_metadata"
+    
+    @staticmethod
+    def get_user_upload_folder(username: str) -> str:
+        """Get user-specific upload folder"""
+        return os.path.join(RAGConfig.BASE_UPLOAD_FOLDER, username)
+    
+    @staticmethod
+    def get_user_vector_db_path(username: str) -> str:
+        """Get user-specific vector DB path"""
+        return os.path.join(RAGConfig.VECTOR_DB_BASE, username)
+    
+    @staticmethod
+    def get_user_metadata_path(username: str) -> str:
+        """Get user-specific metadata path"""
+        return os.path.join(RAGConfig.DOMAIN_METADATA_PATH, f"{username}_metadata.json")
+
+# ============================================================================
+# SECRETS VALIDATION
+# ============================================================================
+
+def validate_secrets():
+    """Validate required secrets exist - fail fast"""
+    required_secrets = ['GROQ_API_KEY', 'ADMIN_PASSWORD']
+    missing = [s for s in required_secrets if s not in st.secrets]
+    
+    if missing:
+        st.error(f"❌ Missing required secrets: {', '.join(missing)}")
+        st.info("Please add these to `.streamlit/secrets.toml`")
+        st.code("""
+# .streamlit/secrets.toml
+GROQ_API_KEY = "your-groq-api-key"
+ADMIN_PASSWORD = "your-secure-admin-password"
+        """)
+        st.stop()
+    
+    logger.info("✅ All required secrets validated")
+
+# ============================================================================
+# AUTHENTICATION & USER MANAGEMENT (BCRYPT)
 # ============================================================================
 
 class PasswordHasher:
-    """Secure password hashing using SHA-256 with salt"""
+    """Secure password hashing using bcrypt"""
     
     @staticmethod
-    def hash_password(password: str, salt: str = None) -> Tuple[str, str]:
-        """Hash password with salt"""
-        if salt is None:
-            salt = secrets.token_hex(16)
-        
-        pwd_hash = hashlib.sha256((password + salt).encode()).hexdigest()
-        return pwd_hash, salt
+    def hash_password(password: str) -> str:
+        """Hash password with bcrypt (salt handled internally)"""
+        pwd_bytes = password.encode('utf-8')
+        hashed = bcrypt.hashpw(pwd_bytes, bcrypt.gensalt())
+        return hashed.decode('utf-8')
     
     @staticmethod
-    def verify_password(password: str, stored_hash: str, salt: str) -> bool:
-        """Verify password against stored hash"""
-        pwd_hash, _ = PasswordHasher.hash_password(password, salt)
-        return pwd_hash == stored_hash
+    def verify_password(password: str, stored_hash: str) -> bool:
+        """Verify password against bcrypt hash"""
+        try:
+            pwd_bytes = password.encode('utf-8')
+            hash_bytes = stored_hash.encode('utf-8')
+            return bcrypt.checkpw(pwd_bytes, hash_bytes)
+        except Exception as e:
+            logger.error(f"Password verification error: {e}")
+            return False
 
 class UserManager:
     """Manages user accounts, authentication, and profiles"""
@@ -62,14 +141,19 @@ class UserManager:
     
     @staticmethod
     def initialize():
-        """Initialize user system with default superuser"""
+        """Initialize user system with default superuser from secrets"""
         if not os.path.exists(UserManager.USERS_FILE):
-            # Create default superuser
-            pwd_hash, salt = PasswordHasher.hash_password("admin123")
+            # Get admin password from secrets
+            admin_password = st.secrets.get("ADMIN_PASSWORD")
+            if not admin_password:
+                logger.error("ADMIN_PASSWORD not found in secrets!")
+                st.error("❌ ADMIN_PASSWORD not configured in secrets")
+                st.stop()
+            
+            pwd_hash = PasswordHasher.hash_password(admin_password)
             users = {
                 "admin": {
                     "password_hash": pwd_hash,
-                    "salt": salt,
                     "role": "superuser",
                     "email": "admin@example.com",
                     "created_at": datetime.now().isoformat(),
@@ -83,6 +167,7 @@ class UserManager:
                 }
             }
             UserManager._save_users(users)
+            logger.info("✅ Default admin user created")
     
     @staticmethod
     def _load_users() -> Dict:
@@ -91,15 +176,19 @@ class UserManager:
             try:
                 with open(UserManager.USERS_FILE, 'r') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logger.error(f"Error loading users: {e}")
                 return {}
         return {}
     
     @staticmethod
     def _save_users(users: Dict):
         """Save users to file"""
-        with open(UserManager.USERS_FILE, 'w') as f:
-            json.dump(users, f, indent=2)
+        try:
+            with open(UserManager.USERS_FILE, 'w') as f:
+                json.dump(users, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving users: {e}")
     
     @staticmethod
     def _load_sessions() -> Dict:
@@ -108,15 +197,19 @@ class UserManager:
             try:
                 with open(UserManager.SESSIONS_FILE, 'r') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logger.error(f"Error loading sessions: {e}")
                 return {}
         return {}
     
     @staticmethod
     def _save_sessions(sessions: Dict):
         """Save sessions to file"""
-        with open(UserManager.SESSIONS_FILE, 'w') as f:
-            json.dump(sessions, f, indent=2)
+        try:
+            with open(UserManager.SESSIONS_FILE, 'w') as f:
+                json.dump(sessions, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving sessions: {e}")
     
     @staticmethod
     def authenticate(username: str, password: str) -> Tuple[bool, Optional[str]]:
@@ -124,10 +217,11 @@ class UserManager:
         users = UserManager._load_users()
         
         if username not in users:
+            logger.warning(f"Login attempt for non-existent user: {username}")
             return False, "Invalid username or password"
         
         user = users[username]
-        if PasswordHasher.verify_password(password, user['password_hash'], user['salt']):
+        if PasswordHasher.verify_password(password, user['password_hash']):
             # Update last login
             users[username]['last_login'] = datetime.now().isoformat()
             UserManager._save_users(users)
@@ -142,8 +236,10 @@ class UserManager:
             }
             UserManager._save_sessions(sessions)
             
+            logger.info(f"✅ User logged in: {username}")
             return True, session_token
         
+        logger.warning(f"Failed login attempt for user: {username}")
         return False, "Invalid username or password"
     
     @staticmethod
@@ -161,6 +257,7 @@ class UserManager:
             # Session expired
             del sessions[session_token]
             UserManager._save_sessions(sessions)
+            logger.info("Session expired and cleaned up")
             return None
         
         return session['username']
@@ -170,8 +267,10 @@ class UserManager:
         """Logout user by removing session"""
         sessions = UserManager._load_sessions()
         if session_token in sessions:
+            username = sessions[session_token].get('username', 'unknown')
             del sessions[session_token]
             UserManager._save_sessions(sessions)
+            logger.info(f"User logged out: {username}")
     
     @staticmethod
     def get_user_data(username: str) -> Optional[Dict]:
@@ -186,6 +285,7 @@ class UserManager:
         if username in users:
             users[username]['profile'] = profile
             UserManager._save_users(users)
+            logger.info(f"Profile updated for user: {username}")
     
     @staticmethod
     def is_superuser(username: str) -> bool:
@@ -204,10 +304,9 @@ class UserManager:
         if len(password) < 6:
             return False, "Password must be at least 6 characters"
         
-        pwd_hash, salt = PasswordHasher.hash_password(password)
+        pwd_hash = PasswordHasher.hash_password(password)
         users[username] = {
             "password_hash": pwd_hash,
-            "salt": salt,
             "role": role,
             "email": email,
             "created_at": datetime.now().isoformat(),
@@ -220,6 +319,7 @@ class UserManager:
             }
         }
         UserManager._save_users(users)
+        logger.info(f"✅ User created: {username} ({role})")
         return True, "User created successfully"
     
     @staticmethod
@@ -235,6 +335,7 @@ class UserManager:
         
         del users[username]
         UserManager._save_users(users)
+        logger.info(f"User deleted: {username}")
         return True, "User deleted successfully"
     
     @staticmethod
@@ -248,11 +349,10 @@ class UserManager:
         if len(new_password) < 6:
             return False, "Password must be at least 6 characters"
         
-        pwd_hash, salt = PasswordHasher.hash_password(new_password)
+        pwd_hash = PasswordHasher.hash_password(new_password)
         users[username]['password_hash'] = pwd_hash
-        users[username]['salt'] = salt
         UserManager._save_users(users)
-        
+        logger.info(f"Password reset for user: {username}")
         return True, "Password reset successfully"
     
     @staticmethod
@@ -264,17 +364,16 @@ class UserManager:
             return False, "User not found"
         
         user = users[username]
-        if not PasswordHasher.verify_password(old_password, user['password_hash'], user['salt']):
+        if not PasswordHasher.verify_password(old_password, user['password_hash']):
             return False, "Current password is incorrect"
         
         if len(new_password) < 6:
             return False, "New password must be at least 6 characters"
         
-        pwd_hash, salt = PasswordHasher.hash_password(new_password)
+        pwd_hash = PasswordHasher.hash_password(new_password)
         users[username]['password_hash'] = pwd_hash
-        users[username]['salt'] = salt
         UserManager._save_users(users)
-        
+        logger.info(f"Password changed for user: {username}")
         return True, "Password changed successfully"
     
     @staticmethod
@@ -293,12 +392,90 @@ class UserManager:
         return user_list
 
 # ============================================================================
+# CACHED INTENT EMBEDDINGS (PERFORMANCE OPTIMIZATION)
+# ============================================================================
+
+@st.cache_resource
+def get_cached_intent_embeddings():
+    """Pre-compute and cache intent example embeddings"""
+    logger.info("Computing intent embeddings (one-time operation)...")
+    
+    embeddings_model = VectorStoreManager.get_embeddings()
+    
+    intent_examples = {
+        "document_related": [
+            "summarize the document",
+            "what topics are discussed",
+            "what does the report say",
+            "explain section 2",
+            "summaries of uploaded files",
+            "analyze the provided documents"
+        ],
+        "entertainment": [
+            "latest netflix trend",
+            "best movies right now",
+            "what anime should I watch",
+            "top tv shows",
+            "celebrity news",
+            "oscar winners"
+        ],
+        "news": [
+            "latest news",
+            "current events",
+            "breaking news",
+            "what happened today",
+            "politics today"
+        ],
+        "personal": [
+            "weather today",
+            "temperature in my city",
+            "how to cook pasta",
+            "best restaurants near me",
+            "what should I eat today"
+        ],
+        "general_knowledge": [
+            "who is alan turing",
+            "what is photosynthesis",
+            "capital of france",
+            "history of ai"
+        ]
+    }
+    
+    cached_embeddings = {}
+    for category, examples in intent_examples.items():
+        cached_embeddings[category] = []
+        for example in examples:
+            emb = embeddings_model.embed_query(example)
+            cached_embeddings[category].append(emb)
+    
+    logger.info("✅ Intent embeddings cached")
+    return cached_embeddings
+
+# ============================================================================
 # STREAMLIT AUTH UI
 # ============================================================================
 
+def show_cloud_banner():
+    """Show Streamlit Cloud info banner"""
+    st.info("""
+    ℹ️ **Running on Streamlit Cloud**
+    - Sessions may reset on app updates or inactivity
+    - Your documents are private to your account
+    - For production use, consider self-hosting
+    """)
+
 def show_login_page():
-    """Display login page"""
-    #st.set_page_config(page_title="Login - RAG Assistant", page_icon="🔐", layout="centered")
+    """Display login page with restart detection"""
+    
+    # Check if this is a restart scenario
+    if 'was_logged_in' in st.session_state and st.session_state.was_logged_in:
+        st.warning("🔄 **App restarted.** Please log in again.")
+        logger.info("App restart detected - forcing re-login")
+        # Clear stale session data
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+    
+    show_cloud_banner()
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -318,15 +495,15 @@ def show_login_page():
                     if success:
                         st.session_state.session_token = result
                         st.session_state.username = username
+                        st.session_state.was_logged_in = True
                         st.success("✅ Login successful!")
                         time.sleep(0.5)
                         st.rerun()
                     else:
                         st.error(f"❌ {result}")
         
-        #st.divider()
-        #st.info("🆕 Default superuser: admin / adminpass)
-        #st.info("🆕 Default user: user1 / password1)
+        st.divider()
+        st.caption("🔒 Secured with bcrypt password hashing")
 
 def show_user_management():
     """Display user management interface (superuser only)"""
@@ -416,35 +593,14 @@ def show_user_settings():
         
         if st.button("🚪 Logout", use_container_width=True):
             UserManager.logout(st.session_state.session_token)
+            st.session_state.was_logged_in = False
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
 
 # ============================================================================
-# EXISTING RAG CODE (UNCHANGED)
+# HELPER FUNCTIONS
 # ============================================================================
-
-st.set_page_config(
-    page_title="RAG Assistant",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-class RAGConfig:
-    CHUNK_SIZE = 500
-    CHUNK_OVERLAP = 100
-    EMBEDDING_MODEL = "BAAI/bge-large-en"
-    LLM_MODEL = "llama-3.3-70b-versatile"
-    LLM_TEMPERATURE = 0.1
-    LLM_MAX_TOKENS = 800
-    TOP_K_RESULTS = 3
-    SIMILARITY_THRESHOLD = 0.5
-    CACHE_SIZE = 100
-    SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.xls', '.csv', '.txt']
-    UPLOAD_FOLDER = "upload"
-    VECTOR_DB_PATH = "vector_store"
-    DOMAIN_METADATA_PATH = "domain_metadata.json"
 
 def extract_section_from_text(text: str) -> str:
     if not text or len(text.strip()) == 0:
@@ -504,55 +660,23 @@ def detect_hallucination_risk(answer: str, num_sources: int, avg_similarity: flo
     else:
         return "LOW ✅", ""
 
-class DomainAnalyzer:
-    INTENT_EXAMPLES = {
-        "document_related": [
-            "summarize the document",
-            "what topics are discussed",
-            "what does the report say",
-            "explain section 2",
-            "summaries of uploaded files",
-            "analyze the provided documents"
-        ],
-        "entertainment": [
-            "latest netflix trend",
-            "best movies right now",
-            "what anime should I watch",
-            "top tv shows",
-            "celebrity news",
-            "oscar winners"
-        ],
-        "news": [
-            "latest news",
-            "current events",
-            "breaking news",
-            "what happened today",
-            "politics today"
-        ],
-        "personal": [
-            "weather today",
-            "temperature in my city",
-            "how to cook pasta",
-            "best restaurants near me",
-            "what should I eat today"
-        ],
-        "general_knowledge": [
-            "who is alan turing",
-            "what is photosynthesis",
-            "capital of france",
-            "history of ai"
-        ]
-    }
+# ============================================================================
+# DOMAIN ANALYZER (WITH CACHED EMBEDDINGS)
+# ============================================================================
 
+class DomainAnalyzer:
+    
     @staticmethod
     def semantic_intent_classify(query: str, embeddings_model) -> str:
+        """Classify query intent using CACHED embeddings"""
+        cached_intent_embeddings = get_cached_intent_embeddings()
         query_emb = embeddings_model.embed_query(query)
+        
         best_category = None
         best_sim = -1
 
-        for category, examples in DomainAnalyzer.INTENT_EXAMPLES.items():
-            for ex in examples:
-                ex_emb = embeddings_model.embed_query(ex)
+        for category, example_embeddings in cached_intent_embeddings.items():
+            for ex_emb in example_embeddings:
                 sim = sum(a*b for a,b in zip(query_emb, ex_emb))
                 if sim > best_sim:
                     best_sim = sim
@@ -697,25 +821,50 @@ class DomainAnalyzer:
 
         return msg
 
+# ============================================================================
+# DOCUMENT STORAGE (USER-NAMESPACED, WITH LIMITS)
+# ============================================================================
+
 class DocumentStorage:
     @staticmethod
-    def ensure_upload_folder():
-        os.makedirs(RAGConfig.UPLOAD_FOLDER, exist_ok=True)
+    def ensure_user_folders(username: str):
+        """Ensure user-specific folders exist"""
+        os.makedirs(RAGConfig.get_user_upload_folder(username), exist_ok=True)
+        os.makedirs(os.path.dirname(RAGConfig.get_user_vector_db_path(username)), exist_ok=True)
+        os.makedirs(os.path.dirname(RAGConfig.get_user_metadata_path(username)), exist_ok=True)
     
     @staticmethod
-    def save_uploaded_file(uploaded_file) -> str:
-        DocumentStorage.ensure_upload_folder()
-        file_path = os.path.join(RAGConfig.UPLOAD_FOLDER, uploaded_file.name)
+    def validate_upload(uploaded_files: List) -> Tuple[bool, str]:
+        """Validate upload against limits"""
+        if len(uploaded_files) > RAGConfig.MAX_FILES_PER_UPLOAD:
+            return False, f"Maximum {RAGConfig.MAX_FILES_PER_UPLOAD} files per upload"
+        
+        for file in uploaded_files:
+            size_mb = file.size / (1024 * 1024)
+            if size_mb > RAGConfig.MAX_FILE_SIZE_MB:
+                return False, f"File {file.name} exceeds {RAGConfig.MAX_FILE_SIZE_MB}MB limit"
+        
+        return True, "OK"
+    
+    @staticmethod
+    def save_uploaded_file(uploaded_file, username: str) -> str:
+        """Save uploaded file to user-specific folder"""
+        DocumentStorage.ensure_user_folders(username)
+        file_path = os.path.join(RAGConfig.get_user_upload_folder(username), uploaded_file.name)
         with open(file_path, 'wb') as f:
             f.write(uploaded_file.getbuffer())
+        logger.info(f"File saved for {username}: {uploaded_file.name}")
         return file_path
     
     @staticmethod
-    def get_stored_files() -> List[str]:
-        DocumentStorage.ensure_upload_folder()
+    def get_stored_files(username: str) -> List[str]:
+        """Get all files for a user"""
+        DocumentStorage.ensure_user_folders(username)
+        folder = RAGConfig.get_user_upload_folder(username)
+        
         files = []
-        for file in os.listdir(RAGConfig.UPLOAD_FOLDER):
-            file_path = os.path.join(RAGConfig.UPLOAD_FOLDER, file)
+        for file in os.listdir(folder):
+            file_path = os.path.join(folder, file)
             if os.path.isfile(file_path):
                 ext = Path(file).suffix.lower()
                 if ext in RAGConfig.SUPPORTED_EXTENSIONS:
@@ -723,25 +872,47 @@ class DocumentStorage:
         return files
     
     @staticmethod
-    def delete_file(filename: str):
-        file_path = os.path.join(RAGConfig.UPLOAD_FOLDER, filename)
+    def check_document_limit(username: str) -> Tuple[bool, str]:
+        """Check if user has reached document limit"""
+        files = DocumentStorage.get_stored_files(username)
+        if len(files) >= RAGConfig.MAX_TOTAL_DOCUMENTS:
+            return False, f"Maximum {RAGConfig.MAX_TOTAL_DOCUMENTS} documents reached"
+        return True, "OK"
+    
+    @staticmethod
+    def delete_file(filename: str, username: str):
+        """Delete file from user folder"""
+        file_path = os.path.join(RAGConfig.get_user_upload_folder(username), filename)
         if os.path.exists(file_path):
             os.remove(file_path)
+            logger.info(f"File deleted for {username}: {filename}")
     
     @staticmethod
-    def save_domain_metadata(metadata: Dict):
-        with open(RAGConfig.DOMAIN_METADATA_PATH, 'w') as f:
-            json.dump(metadata, f, indent=2)
+    def save_domain_metadata(metadata: Dict, username: str):
+        """Save domain metadata for user (only on rebuild)"""
+        try:
+            with open(RAGConfig.get_user_metadata_path(username), 'w') as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Domain metadata saved for {username}")
+        except Exception as e:
+            logger.error(f"Error saving metadata for {username}: {e}")
     
     @staticmethod
-    def load_domain_metadata() -> Optional[Dict]:
-        if os.path.exists(RAGConfig.DOMAIN_METADATA_PATH):
+    def load_domain_metadata(username: str) -> Optional[Dict]:
+        """Load domain metadata for user"""
+        metadata_path = RAGConfig.get_user_metadata_path(username)
+        if os.path.exists(metadata_path):
             try:
-                with open(RAGConfig.DOMAIN_METADATA_PATH, 'r') as f:
+                with open(metadata_path, 'r') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logger.error(f"Error loading metadata for {username}: {e}")
                 return None
         return None
+
+# ============================================================================
+# DOCUMENT LOADER (UNCHANGED)
+# ============================================================================
 
 class DocumentLoader:
     @staticmethod
@@ -755,8 +926,10 @@ class DocumentLoader:
                 
                 docs = DocumentLoader._load_single_file(file_path, file_name, file_ext)
                 documents.extend(docs)
+                logger.info(f"Loaded document: {file_name}")
                 
             except Exception as e:
+                logger.error(f"Error loading {file_name}: {e}")
                 st.error(f"Error loading {file_name}: {str(e)}")
         
         return documents
@@ -820,10 +993,16 @@ class DocumentLoader:
         
         return docs
 
+# ============================================================================
+# VECTOR STORE MANAGER (CACHED, AUTO-RECOVERY)
+# ============================================================================
+
 class VectorStoreManager:
     @staticmethod
     @st.cache_resource
     def get_embeddings():
+        """Cached embeddings model"""
+        logger.info("Loading embeddings model...")
         return HuggingFaceEmbeddings(
             model_name=RAGConfig.EMBEDDING_MODEL,
             encode_kwargs={"normalize_embeddings": True}
@@ -831,6 +1010,7 @@ class VectorStoreManager:
     
     @staticmethod
     def create_vector_db(documents: List[Document]):
+        """Create vector DB with progress indicator"""
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=RAGConfig.CHUNK_SIZE,
             chunk_overlap=RAGConfig.CHUNK_OVERLAP,
@@ -848,20 +1028,49 @@ class VectorStoreManager:
         embeddings = VectorStoreManager.get_embeddings()
         vector_db = FAISS.from_documents(chunks, embeddings)
         
+        logger.info(f"Vector DB created: {len(chunks)} chunks")
         return vector_db, len(chunks)
     
     @staticmethod
-    def save_vector_db(vector_db):
-        os.makedirs(RAGConfig.VECTOR_DB_PATH, exist_ok=True)
-        vector_db.save_local(RAGConfig.VECTOR_DB_PATH)
+    def save_vector_db(vector_db, username: str):
+        """Save vector DB to user-specific path"""
+        try:
+            db_path = RAGConfig.get_user_vector_db_path(username)
+            os.makedirs(db_path, exist_ok=True)
+            vector_db.save_local(db_path)
+            logger.info(f"Vector DB saved for {username}")
+        except Exception as e:
+            logger.error(f"Error saving vector DB for {username}: {e}")
     
     @staticmethod
-    def load_vector_db():
-        if os.path.exists(RAGConfig.VECTOR_DB_PATH):
-            embeddings = VectorStoreManager.get_embeddings()
-            return FAISS.load_local(RAGConfig.VECTOR_DB_PATH, embeddings, 
-                                   allow_dangerous_deserialization=True)
-        return None
+    def load_vector_db(username: str):
+        """Load vector DB with auto-recovery"""
+        db_path = RAGConfig.get_user_vector_db_path(username)
+        
+        if os.path.exists(db_path):
+            try:
+                embeddings = VectorStoreManager.get_embeddings()
+                vector_db = FAISS.load_local(db_path, embeddings, 
+                                           allow_dangerous_deserialization=True)
+                logger.info(f"Vector DB loaded for {username}")
+                return vector_db
+            except Exception as e:
+                logger.error(f"Error loading vector DB for {username}: {e}")
+                st.warning("⚠️ Vector DB corrupted. Will rebuild automatically.")
+                return None
+        else:
+            logger.info(f"No vector DB found for {username} - will build on first upload")
+            return None
+    
+    @staticmethod
+    def vector_db_exists(username: str) -> bool:
+        """Check if vector DB exists for user"""
+        db_path = RAGConfig.get_user_vector_db_path(username)
+        return os.path.exists(db_path) and os.path.isdir(db_path)
+
+# ============================================================================
+# RAG ASSISTANT (UNCHANGED LOGIC)
+# ============================================================================
 
 class RAGAssistant:
     def __init__(self, vector_db, groq_api_key: str, domain_metadata: Dict, 
@@ -890,7 +1099,12 @@ class RAGAssistant:
             return result
         
         st.session_state.cache_misses += 1
-        relevant_docs = self.vector_db.similarity_search_with_score(question, k=k)
+        
+        try:
+            relevant_docs = self.vector_db.similarity_search_with_score(question, k=k)
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            raise
         
         context_parts = []
         citations = []
@@ -1016,14 +1230,17 @@ QUESTION: {question}
 
 ANSWER (cite all sources used):"""
         
-        response = self.client.chat.completions.create(
-            model=RAGConfig.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=RAGConfig.LLM_TEMPERATURE,
-            max_tokens=RAGConfig.LLM_MAX_TOKENS
-        )
-        
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=RAGConfig.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=RAGConfig.LLM_TEMPERATURE,
+                max_tokens=RAGConfig.LLM_MAX_TOKENS
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"LLM generation failed: {e}")
+            raise
     
     def _build_domain_context(self) -> str:
         domain_type = self.domain_metadata.get('domain_type', 'General')
@@ -1079,6 +1296,10 @@ ANSWER (cite all sources used):"""
         
         return "\n".join(context_parts) if context_parts else ""
 
+# ============================================================================
+# UI COMPONENTS
+# ============================================================================
+
 def show_domain_insights():
     if 'domain_metadata' not in st.session_state:
         return
@@ -1116,7 +1337,6 @@ def show_personalization_form():
         st.divider()
         st.header("💤 Personalization")
         
-        # Load current user profile
         username = st.session_state.get('username')
         user_data = UserManager.get_user_data(username)
         current_profile = user_data.get('profile', {}) if user_data else {}
@@ -1170,14 +1390,17 @@ def show_personalization_form():
                 st.markdown(f"💡 Interests: {profile['interests']}")
 
 def manage_documents():
+    """Document management with upload limits"""
+    username = st.session_state.username
+    
     with st.sidebar:
         st.divider()
         st.header("📚 Document Library")
         
-        stored_files = DocumentStorage.get_stored_files()
+        stored_files = DocumentStorage.get_stored_files(username)
         
         if stored_files:
-            st.markdown(f"**{len(stored_files)} documents**")
+            st.markdown(f"**{len(stored_files)} / {RAGConfig.MAX_TOTAL_DOCUMENTS} documents**")
             
             with st.expander("📋 View Documents", expanded=False):
                 for file_path in stored_files:
@@ -1187,32 +1410,58 @@ def manage_documents():
                         st.text(filename[:30] + "..." if len(filename) > 30 else filename)
                     with col2:
                         if st.button("🗑️", key=f"del_{filename}", help="Delete"):
-                            DocumentStorage.delete_file(filename)
+                            DocumentStorage.delete_file(filename, username)
                             st.session_state.needs_rebuild = True
+                            logger.info(f"Document deleted by {username}: {filename}")
                             st.rerun()
         else:
             st.info("No documents yet")
         
+        # Check document limit
+        can_upload, limit_msg = DocumentStorage.check_document_limit(username)
+        
         st.divider()
         st.subheader("➕ Add Documents")
-        new_files = st.file_uploader(
-            "Upload documents",
-            type=RAGConfig.SUPPORTED_EXTENSIONS,
-            accept_multiple_files=True,
-            key="new_doc_uploader"
-        )
         
-        if new_files and st.button("💾 Add to Library", use_container_width=True):
-            with st.spinner("Saving documents..."):
-                for file in new_files:
-                    DocumentStorage.save_uploaded_file(file)
+        if not can_upload:
+            st.warning(f"⚠️ {limit_msg}")
+        else:
+            st.caption(f"Max {RAGConfig.MAX_FILES_PER_UPLOAD} files, {RAGConfig.MAX_FILE_SIZE_MB}MB each")
+            
+            new_files = st.file_uploader(
+                "Upload documents",
+                type=RAGConfig.SUPPORTED_EXTENSIONS,
+                accept_multiple_files=True,
+                key="new_doc_uploader"
+            )
+            
+            if new_files:
+                # Validate uploads
+                valid, msg = DocumentStorage.validate_upload(new_files)
+                
+                if not valid:
+                    st.error(f"❌ {msg}")
+                elif st.button("💾 Add to Library", use_container_width=True):
+                    with st.spinner("Saving documents..."):
+                        for file in new_files:
+                            DocumentStorage.save_uploaded_file(file, username)
+                        st.session_state.needs_rebuild = True
+                        st.success(f"✅ Added {len(new_files)} document(s)")
+                        logger.info(f"{len(new_files)} documents uploaded by {username}")
+                        st.rerun()
+        
+        # Prevent frequent rebuilds
+        if st.session_state.get('last_rebuild_time'):
+            time_since_rebuild = time.time() - st.session_state.last_rebuild_time
+            if time_since_rebuild < 10:  # 10 seconds cooldown
+                st.caption("⏳ Index rebuilt recently. Wait a moment...")
+            elif st.button("🔄 Rebuild Index", use_container_width=True):
                 st.session_state.needs_rebuild = True
-                st.success(f"✅ Added {len(new_files)} document(s)")
                 st.rerun()
-        
-        if st.button("🔄 Rebuild Index", use_container_width=True):
-            st.session_state.needs_rebuild = True
-            st.rerun()
+        else:
+            if st.button("🔄 Rebuild Index", use_container_width=True):
+                st.session_state.needs_rebuild = True
+                st.rerun()
 
 def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
     domain_type = domain_metadata.get('domain_type', 'General')
@@ -1249,7 +1498,21 @@ def generate_smart_suggestions(domain_metadata: Dict) -> List[str]:
     
     return suggestions
 
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+st.set_page_config(
+    page_title="RAG Assistant",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 def main():
+    # Validate secrets first
+    validate_secrets()
+    
     # Initialize user system
     UserManager.initialize()
     
@@ -1261,12 +1524,15 @@ def main():
     # Verify session
     username = UserManager.verify_session(st.session_state.session_token)
     if not username:
-        st.error("Session expired. Please login again.")
+        st.warning("🔄 Session expired. Please log in again.")
+        logger.info("Session expired - forcing re-login")
+        st.session_state.was_logged_in = True
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
     
     st.session_state.username = username
+    st.session_state.was_logged_in = True
     
     # Load user profile
     user_data = UserManager.get_user_data(username)
@@ -1280,18 +1546,19 @@ def main():
     if 'needs_rebuild' not in st.session_state:
         st.session_state.needs_rebuild = False
     
+    # Get API key from secrets
+    groq_api_key = st.secrets.get("GROQ_API_KEY")
+    
     # Sidebar configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
-
-        groq_api_key = st.secrets.get("GROQ_API_KEY")
-
-        if not groq_api_key:
-            st.warning("⚠️ Groq API key not found in secrets")
-            show_user_settings()
-            show_user_management()
+        
+        if groq_api_key:
+            st.success("✅ API Key loaded from secrets")
+        else:
+            st.error("❌ GROQ_API_KEY not found in secrets")
             st.stop()
-
+        
         st.divider()
         st.header("🔧 Settings")
         k_results = st.slider("Number of sources", 1, 10, RAGConfig.TOP_K_RESULTS)
@@ -1313,8 +1580,9 @@ def main():
                 st.session_state.cache_hits = 0
                 st.session_state.cache_misses = 0
                 st.success("Cache cleared!")
+                logger.info(f"Cache cleared by {username}")
     
-    # Show user settings and management
+    # Show user interface components
     show_user_settings()
     show_user_management()
     show_domain_insights()
@@ -1322,34 +1590,77 @@ def main():
     manage_documents()
     
     # Load documents
-    stored_files = DocumentStorage.get_stored_files()
+    stored_files = DocumentStorage.get_stored_files(username)
     
     if not stored_files:
-        st.info("📚 No documents in library. Please add documents using the sidebar.")
+        st.info("📚 No documents in your library. Please add documents using the sidebar.")
         st.stop()
+    
+    # Check if vector DB exists
+    vector_db_exists = VectorStoreManager.vector_db_exists(username)
+    
+    # Auto-recovery: rebuild if vector DB missing
+    if not vector_db_exists and not st.session_state.needs_rebuild:
+        st.warning("⚠️ Vector database missing. Auto-rebuilding...")
+        logger.warning(f"Vector DB missing for {username} - auto-rebuilding")
+        st.session_state.needs_rebuild = True
     
     # Build/load vector store
     if st.session_state.needs_rebuild or 'vector_db' not in st.session_state:
         with st.spinner("🔨 Building vector store..."):
-            documents = DocumentLoader.load_documents(stored_files)
-            
-            if not documents:
-                st.error("No documents could be loaded.")
+            try:
+                documents = DocumentLoader.load_documents(stored_files)
+                
+                if not documents:
+                    st.error("No documents could be loaded.")
+                    logger.error(f"No documents loaded for {username}")
+                    st.stop()
+                
+                # Check document count warning
+                if len(documents) > 100:
+                    st.warning(f"⚠️ Processing {len(documents)} documents. This may take a while...")
+                
+                # Analyze domain
+                domain_metadata = DomainAnalyzer.analyze_document_collection(documents)
+                DocumentStorage.save_domain_metadata(domain_metadata, username)
+                
+                # Create vector DB
+                vector_db, num_chunks = VectorStoreManager.create_vector_db(documents)
+                VectorStoreManager.save_vector_db(vector_db, username)
+                
+                st.session_state.vector_db = vector_db
+                st.session_state.num_documents = len(documents)
+                st.session_state.num_chunks = num_chunks
+                st.session_state.domain_metadata = domain_metadata
+                st.session_state.needs_rebuild = False
+                st.session_state.last_rebuild_time = time.time()
+                
+                st.success(f"✅ Processed {len(documents)} documents → {num_chunks} chunks")
+                logger.info(f"Vector DB rebuilt for {username}: {len(documents)} docs, {num_chunks} chunks")
+                
+            except Exception as e:
+                st.error(f"❌ Error building vector store: {str(e)}")
+                logger.error(f"Vector store build failed for {username}: {e}")
                 st.stop()
-            
-            domain_metadata = DomainAnalyzer.analyze_document_collection(documents)
-            DocumentStorage.save_domain_metadata(domain_metadata)
-            
-            vector_db, num_chunks = VectorStoreManager.create_vector_db(documents)
-            VectorStoreManager.save_vector_db(vector_db)
-            
-            st.session_state.vector_db = vector_db
-            st.session_state.num_documents = len(documents)
-            st.session_state.num_chunks = num_chunks
-            st.session_state.domain_metadata = domain_metadata
-            st.session_state.needs_rebuild = False
-            
-            st.success(f"✅ Processed {len(documents)} documents → {num_chunks} chunks")
+    
+    # Load existing vector DB if not in session
+    if 'vector_db' not in st.session_state:
+        with st.spinner("📂 Loading vector store..."):
+            vector_db = VectorStoreManager.load_vector_db(username)
+            if vector_db:
+                st.session_state.vector_db = vector_db
+                
+                # Load metadata
+                domain_metadata = DocumentStorage.load_domain_metadata(username)
+                if domain_metadata:
+                    st.session_state.domain_metadata = domain_metadata
+                    st.session_state.num_documents = domain_metadata.get('total_documents', len(stored_files))
+                
+                logger.info(f"Vector DB loaded from disk for {username}")
+            else:
+                # Trigger rebuild
+                st.session_state.needs_rebuild = True
+                st.rerun()
     
     # Create assistant
     assistant = RAGAssistant(
@@ -1400,9 +1711,12 @@ def main():
                     risk = result['metrics']['hallucination_risk']
                     if "HIGH" in risk or "MEDIUM" in risk:
                         st.info(f"🔍 Hallucination Risk: {risk}")
+                
+                logger.info(f"Query by {username}: {question[:50]}... (similarity: {result['metrics'].get('avg_similarity', 0):.2f})")
             
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
+                logger.error(f"Query error for {username}: {e}")
     
     # Smart suggestions
     if st.session_state.get('domain_metadata'):
@@ -1435,10 +1749,11 @@ def main():
                                 st.markdown(f"**Page:** {citation['page']} | **Relevance:** {citation['similarity']:.1%}")
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+                    logger.error(f"Suggestion query error for {username}: {e}")
 
 if __name__ == "__main__":
     main()
     
-    # Add footer
+    # Footer
     st.markdown("---")
     st.markdown("<p style='text-align: center; color: #666; font-size: 0.9em;'>Made with ❤️ © Bootlabs Technologies Private Limited</p>", unsafe_allow_html=True)
