@@ -460,7 +460,6 @@ def show_cloud_banner():
     st.info("""
     ℹ️ **Running on Streamlit Cloud**
     - Sessions may reset on app updates or inactivity
-    - Your documents are private to your account
     """)
 
 def show_login_page():
