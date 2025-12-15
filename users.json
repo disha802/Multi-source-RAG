@@ -14,12 +14,12 @@
     }
   },
   "user1": {
-    "password_hash": "258cda5ef77fa2c8a38d7daeda03c3002dd8389b01ff97817b2db0888f3e5c6c",
-    "salt": "e4ff0fc0475249950019d4164b8d1061",
+    "password_hash": "d0e191f6f709534c901de4904fe6574390125015fc6c8c3ba02f7e451aacbe58",
+    "salt": "ecb249bb0c4e5b31b8b354eff25c072b",
     "role": "user",
     "email": "user1@example.com",
     "created_at": "2025-12-15T10:09:12.791398",
-    "last_login": "2025-12-15T10:18:01.802128",
+    "last_login": "2025-12-15T10:22:26.593483",
     "profile": {
       "age": "",
       "interests": "",

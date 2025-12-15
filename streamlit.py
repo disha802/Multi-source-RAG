@@ -1284,14 +1284,15 @@ def main():
     # Sidebar configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
-        groq_api_key = st.text_input("Groq API Key", type="password")
-        
+
+        groq_api_key = st.secrets.get("GROQ_API_KEY")
+
         if not groq_api_key:
-            st.warning("⚠️ Please enter your Groq API key")
+            st.warning("⚠️ Groq API key not found in secrets")
             show_user_settings()
             show_user_management()
             st.stop()
-        
+
         st.divider()
         st.header("🔧 Settings")
         k_results = st.slider("Number of sources", 1, 10, RAGConfig.TOP_K_RESULTS)
