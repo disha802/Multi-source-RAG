@@ -1438,3 +1438,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    # Add footer
+    st.markdown("---")
+    st.markdown("<p style='text-align: center; color: #666; font-size: 0.9em;'>Made with ❤️ © Bootlabs Technologies Private Limited</p>", unsafe_allow_html=True)
