@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from collections import Counter
 from datetime import datetime, timedelta
+import pandas as pd
+from langchain_core.documents import Document
 
 # Password hashing with bcrypt
 import bcrypt
@@ -916,79 +918,138 @@ class DocumentLoader:
     @staticmethod
     def load_documents(file_paths: List[str]) -> List[Document]:
         documents = []
-        
+
         for file_path in file_paths:
             try:
                 file_name = os.path.basename(file_path)
                 file_ext = Path(file_path).suffix.lower()
-                
+
                 docs = DocumentLoader._load_single_file(file_path, file_name, file_ext)
                 documents.extend(docs)
                 logger.info(f"Loaded document: {file_name}")
-                
+
             except Exception as e:
                 logger.error(f"Error loading {file_name}: {e}")
                 st.error(f"Error loading {file_name}: {str(e)}")
-        
+
         return documents
-    
+
     @staticmethod
     def _load_single_file(file_path: str, file_name: str, file_ext: str) -> List[Document]:
+        docs: List[Document] = []
+
+        # ================= PDF =================
         if file_ext == ".pdf":
             loader = PyPDFLoader(file_path)
-            docs = loader.load()
-            for i, doc in enumerate(docs):
+            pages = loader.load()
+            for i, doc in enumerate(pages):
                 doc.metadata.update({
                     "source_type": "PDF",
                     "document_title": file_name,
                     "page_number": i + 1,
-                    "total_pages": len(docs),
+                    "total_pages": len(pages),
                     "section": extract_section_from_text(doc.page_content)
                 })
+                docs.append(doc)
+
+        # ================= DOCX =================
         elif file_ext == ".docx":
             loader = Docx2txtLoader(file_path)
-            docs = loader.load()
-            for doc in docs:
+            pages = loader.load()
+            for doc in pages:
                 doc.metadata.update({
                     "source_type": "Word Document",
                     "document_title": file_name,
                     "page_number": "N/A",
                     "section": extract_section_from_text(doc.page_content)
                 })
+                docs.append(doc)
+
+        # ================= EXCEL (🔥 UPDATED PART) =================
         elif file_ext in [".xlsx", ".xls"]:
+            # ---- 1. Normal Excel text loading (unchanged behavior)
             loader = UnstructuredExcelLoader(file_path)
-            docs = loader.load()
-            for i, doc in enumerate(docs):
+            excel_docs = loader.load()
+            for i, doc in enumerate(excel_docs):
                 doc.metadata.update({
                     "source_type": "Excel",
                     "document_title": file_name,
-                    "page_number": f"Sheet {i+1}",
+                    "page_number": f"Sheet {i + 1}",
                     "section": "Tabular Data"
                 })
+                docs.append(doc)
+
+            # ---- 2. NEW: Precompute statistics using pandas
+            try:
+                sheets = pd.read_excel(file_path, sheet_name=None)
+
+                for sheet_name, df in sheets.items():
+                    numeric_cols = df.select_dtypes(include="number")
+
+                    if numeric_cols.empty:
+                        continue
+
+                    for col in numeric_cols.columns:
+                        col_data = numeric_cols[col].dropna()
+                        if col_data.empty:
+                            continue
+
+                        summary_text = (
+                            f"📊 Computed Summary for Excel file '{file_name}'.\n"
+                            f"Sheet: {sheet_name}\n"
+                            f"Column: {col}\n"
+                            f"Total values: {len(col_data)}\n"
+                            f"Sum: {col_data.sum()}\n"
+                            f"Average: {col_data.mean()}\n"
+                            f"Minimum: {col_data.min()}\n"
+                            f"Maximum: {col_data.max()}"
+                        )
+
+                        docs.append(
+                            Document(
+                                page_content=summary_text,
+                                metadata={
+                                    "source_type": "Excel Summary",
+                                    "document_title": file_name,
+                                    "sheet_name": sheet_name,
+                                    "column_name": col,
+                                    "section": "Computed Statistics"
+                                }
+                            )
+                        )
+
+            except Exception as e:
+                logger.warning(f"Excel statistics extraction failed for {file_name}: {e}")
+
+        # ================= CSV =================
         elif file_ext == ".csv":
             loader = CSVLoader(file_path)
-            docs = loader.load()
-            for doc in docs:
+            csv_docs = loader.load()
+            for doc in csv_docs:
                 doc.metadata.update({
                     "source_type": "CSV",
                     "document_title": file_name,
                     "page_number": "Data Table",
                     "section": "Tabular Data"
                 })
+                docs.append(doc)
+
+        # ================= TXT =================
         elif file_ext == ".txt":
             loader = TextLoader(file_path)
-            docs = loader.load()
-            for doc in docs:
+            txt_docs = loader.load()
+            for doc in txt_docs:
                 doc.metadata.update({
                     "source_type": "Text File",
                     "document_title": file_name,
                     "page_number": "N/A",
                     "section": extract_section_from_text(doc.page_content)
                 })
+                docs.append(doc)
+
         else:
             st.warning(f"Unsupported file type: {file_ext}")
-            return []
-        
+
         return docs
 
 # ============================================================================
